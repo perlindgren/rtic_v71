@@ -3,9 +3,13 @@
         "Monotonics",
         "PIOC",
         "atsamx",
+        "codr",
         "ehal",
         "hprintln",
+        "pcer",
+        "pcsr",
         "semihosting",
+        "sodr",
         "systick"
     ]
 }
