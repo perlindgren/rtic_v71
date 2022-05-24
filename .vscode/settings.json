@@ -1,0 +1,11 @@
+{
+    "cSpell.ignoreWords": [
+        "Monotonics",
+        "PIOC",
+        "atsamx",
+        "ehal",
+        "hprintln",
+        "semihosting",
+        "systick"
+    ]
+}
