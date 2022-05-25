@@ -9,7 +9,7 @@ version = "0.1.0"
 cortex-m = { version = "0.7.4", features = ["linker-plugin-lto"] }
 cortex-m-semihosting = "0.5.0"
 
-cortex-m-rtic = "1.0.0"
+cortex-m-rtic = "1.1.2"
 embedded-hal = "0.2.7"
 
 # Panic handlers, comment out all but one to generate doc!
@@ -32,15 +32,9 @@ panic-semihosting = "0.6.0"
 # usbd-serial = "0.1.1"
 # fugit = "0.3.5"
 
-
-
 [dependencies.atsamx7x-hal]
 version = "0.1.0"
 features = ["samv71q21b-rt"]
-
-# [dependencies.stm32f4xx-hal]
-# version = "0.12.0"
-# features = ["rt", "stm32f411", "usb_fs"]
 
 [profile.dev]
 incremental = false

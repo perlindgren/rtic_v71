@@ -1,4 +1,9 @@
 // hello.rs
+//
+// simple test of semihosting
+//
+// > openocd -f openocd.cfg
+// > cargo run --example hello
 
 #![no_main]
 #![no_std]
@@ -7,7 +12,6 @@ use panic_semihosting as _;
 
 #[rtic::app(device = atsamx7x_hal::target_device, dispatchers = [])]
 mod app {
-    // use dwt_systick_monotonic::*;
     use atsamx7x_hal as hal;
     use cortex_m_semihosting::hprintln;
     use hal::ehal::watchdog::WatchdogDisable;

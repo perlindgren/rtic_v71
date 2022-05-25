@@ -1,4 +1,7 @@
-// hello.rs
+// led.rs
+//
+// Blinks the LED1 on the XPlained Ultra, PC09 (4.3.3)
+// http://ww1.microchip.com/downloads/en/devicedoc/atmel-42408-samv71-xplained-ultra_user-guide.pdf
 
 #![no_main]
 #![no_std]
@@ -7,7 +10,6 @@ use panic_semihosting as _;
 
 #[rtic::app(device = atsamx7x_hal::target_device, dispatchers = [])]
 mod app {
-    // use dwt_systick_monotonic::*;
     use atsamx7x_hal as hal;
     use cortex_m_semihosting::hprintln;
     use hal::ehal::watchdog::WatchdogDisable;
@@ -24,7 +26,6 @@ mod app {
         // Disable the watchdog.
         hal::watchdog::Watchdog::new(ctx.device.WDT).disable();
 
-        // PC09 Yellow LED (4.3.3)
         let pmc = ctx.device.PMC;
         let pioc = ctx.device.PIOC;
 
