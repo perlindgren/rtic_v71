@@ -2,7 +2,7 @@
 authors = ["Per Lindgren <per.lindgren@ltu.se>"]
 edition = "2021"
 readme = "README.md"
-name = "app"
+name = "x7x_usb"
 version = "0.1.0"
 
 [dependencies]
@@ -28,8 +28,9 @@ panic-semihosting = "0.6.0"
 # systick-monotonic = "1.0.0"
 # dwt-systick-monotonic = "1.0.0"
 # nb = "1.0.0"
-# usb-device = "0.2.8"
-# usbd-serial = "0.1.1"
+usb-device = "0.2.8"
+bare-metal = "1.0.0"
+usbd-serial = "0.1.1"
 # fugit = "0.3.5"
 
 [dependencies.atsamx7x-hal]
