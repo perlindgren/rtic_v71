@@ -192,7 +192,8 @@ impl UsbBus for Usbd {
 
             // todo, dual bank
         };
-        // svd2rust API distinguish modes, we use ctrl here if set differently
+        // svd2rust API distinguish modes, we use ctrl mode here
+        // to emulate the "unsafe" use from the TinyUsb abstraction for now.
 
         // setup RSTDTS
         usb_hs.usbhs_deveptier_ctrl_mode()[ep_index].write(|w| w.rstdts().set_bit());
