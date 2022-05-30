@@ -202,7 +202,7 @@ impl UsbBus for Usbd {
 
         // check that endpoint was correctly initiated
         // Notice, re-allocation might fail in case size is larger, so be aware
-        if usb_hs.usbhs_deveptisr_intrpt_mode()[ep_index]
+        if usb_hs.usbhs_deveptisr_ctrl_mode()[ep_index]
             .read()
             .cfgok()
             .bit_is_set()
