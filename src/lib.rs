@@ -3,8 +3,8 @@
 
 use usb_device::{
     bus::{PollResult, UsbBus, UsbBusAllocator},
-    endpoint::{EndpointAddress, EndpointType},
-    Result, UsbDirection,
+    endpoint::{EndpointAddress, EndpointDirection, EndpointType},
+    Result, UsbDirection, UsbError,
 };
 
 use bare_metal::Mutex;
@@ -44,7 +44,22 @@ pub struct Usbd {
     iso_out_used: bool,
     // ep0_state: Mutex<Cell<EP0State>>,
     // busy_in_endpoints: Mutex<Cell<u16>>,
+    xfer_status: [XferStatus; MAX_ENDPOINTS],
 }
+
+// Transfer control context
+
+#[derive(Debug, Copy, Clone)]
+struct XferStatus {
+    //uint8_t * buffer;
+    // uint16_t total_len;
+    // uint16_t queued_len;
+    max_packet_size: u16,
+    // uint8_t interval;
+    // tu_fifo_t * fifo;
+}
+
+const MAX_ENDPOINTS: usize = 10;
 
 impl Usbd {
     /// Creates a new USB bus, taking ownership of the raw peripheral.
@@ -68,6 +83,7 @@ impl Usbd {
             //     is_set_address: false,
             // })),
             // busy_in_endpoints: Mutex::new(Cell::new(0)),
+            xfer_status: [XferStatus { max_packet_size: 0 }; MAX_ENDPOINTS],
         })
     }
 }
@@ -78,10 +94,141 @@ impl UsbBus for Usbd {
         ep_dir: UsbDirection,
         ep_addr: Option<EndpointAddress>,
         ep_type: EndpointType,
-        max_packet_size: u16,
+        ep_max_packet_size: u16,
         interval: u8,
     ) -> Result<EndpointAddress> {
-        unimplemented!()
+        // for now assume ep_addr set
+        let ep_index: u8 = ep_addr.unwrap().into();
+        let ep_index = ep_index as usize;
+
+        // check endpoint address, only 0..9 allowed
+        if ep_index > 9 && ep_max_packet_size <= 1024 {
+            return Err(UsbError::InvalidEndpoint);
+        }
+
+        // Safety: Usbd owns the USBHS
+        let usb_hs = unsafe { &*pac::USBHS::ptr() };
+
+        self.xfer_status[ep_index].max_packet_size = ep_max_packet_size;
+
+        // Per: not sure if the below is needed
+        // Note to self: Depends how the actual reset/allocation is done in HW
+        // USB_REG->DEVEPT &=~(1 << (DEVEPT_EPRST0_Pos + epnum));
+
+        // reset endpoint
+        usb_hs.usbhs_devept.modify(|_, w| match ep_index {
+            0 => w.eprst0().set_bit(),
+            1 => w.eprst1().set_bit(),
+            2 => w.eprst2().set_bit(),
+            3 => w.eprst3().set_bit(),
+            4 => w.eprst4().set_bit(),
+            5 => w.eprst5().set_bit(),
+            6 => w.eprst6().set_bit(),
+            7 => w.eprst7().set_bit(),
+            8 => w.eprst8().set_bit(),
+            9 => w.eprst9().set_bit(),
+
+            _ => unreachable!(),
+        });
+
+        // enable endpoint
+        usb_hs.usbhs_devept.modify(|_, w| match ep_index {
+            0 => w.epen0().set_bit(),
+            1 => w.epen1().set_bit(),
+            2 => w.epen2().set_bit(),
+            3 => w.epen3().set_bit(),
+            4 => w.epen4().set_bit(),
+            5 => w.epen5().set_bit(),
+            6 => w.epen6().set_bit(),
+            7 => w.epen7().set_bit(),
+            8 => w.epen8().set_bit(),
+            9 => w.epen9().set_bit(),
+            _ => unreachable!(),
+        });
+
+        // generic configuration
+        usb_hs.usbhs_deveptcfg[ep_index].write(|w| {
+            //
+            match ep_max_packet_size {
+                0..=8 => w.epsize()._8_byte(),
+                9..=16 => w.epsize()._16_byte(),
+                17..=32 => w.epsize()._32_byte(),
+                33..=64 => w.epsize()._64_byte(),
+                65..=128 => w.epsize()._128_byte(),
+                129..=256 => w.epsize()._256_byte(),
+                257..=512 => w.epsize()._512_byte(),
+                513..=1024 => w.epsize()._1024_byte(),
+                _ => unreachable!(),
+            };
+            // set bank
+            w.epbk()._1_bank();
+
+            // force allocation
+            w.alloc().set_bit()
+        });
+
+        if ep_index == 0 {
+            // Configure the Endpoint 0 configuration register
+            usb_hs.usbhs_deveptcfg[0].write(|w| {
+                // set end point type to CTRL
+                w.eptype().ctrl()
+            });
+        } else {
+            usb_hs.usbhs_deveptcfg[ep_index].write(|w| {
+                // set end point type
+                w.eptype().bits(ep_type as u8);
+
+                // autosw
+                w.autosw().set_bit();
+
+                // set nbtrans
+                if ep_type == EndpointType::Isochronous {
+                    w.nbtrans()._1_trans();
+                }
+
+                // direction
+                w.epdir().bit(ep_dir == UsbDirection::Out)
+            });
+
+            // todo, dual bank
+        };
+        // svd2rust API distinguish modes, we use ctrl here if set differently
+
+        // setup RSTDTS
+        usb_hs.usbhs_deveptier_ctrl_mode()[ep_index].write(|w| w.rstdts().set_bit());
+
+        // setup STALLRQC
+        usb_hs.usbhs_deveptidr_ctrl_mode()[ep_index].write(|w| w.stallrqc().set_bit());
+
+        // check that endpoint was correctly initiated
+        // Notice, re-allocation might fail in case size is larger, so be aware
+        if usb_hs.usbhs_deveptisr_intrpt_mode()[ep_index]
+            .read()
+            .cfgok()
+            .bit_is_set()
+        {
+            // Endpoint configuration is successful
+            usb_hs.usbhs_deveptier_ctrl_mode()[ep_index].write(|w| w.rxstpes().set_bit());
+            // Enable Endpoint Interrupt
+            usb_hs.usbhs_devier.write(|w| match ep_index {
+                0 => w.pep_0().set_bit(),
+                1 => w.pep_1().set_bit(),
+                2 => w.pep_2().set_bit(),
+                3 => w.pep_3().set_bit(),
+                4 => w.pep_4().set_bit(),
+                5 => w.pep_5().set_bit(),
+                6 => w.pep_6().set_bit(),
+                7 => w.pep_7().set_bit(),
+                8 => w.pep_8().set_bit(),
+                9 => w.pep_9().set_bit(),
+
+                _ => unreachable!(),
+            });
+
+            Ok(ep_addr.unwrap())
+        } else {
+            Err(UsbError::InvalidEndpoint)
+        }
     }
 
     fn enable(&mut self) {
