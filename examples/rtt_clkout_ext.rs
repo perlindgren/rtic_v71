@@ -1,19 +1,18 @@
-// clkout.rs
+// clkout_ext.rs
 //
-// Measures the internal RC oscillator on PA6
+// Measures the external RC oscillator on PA6
 // Connected to EXT2 5 on the XPlained Ultra 71
 
 #![no_main]
 #![no_std]
 
-use panic_semihosting as _;
+use panic_rtt_target as _;
 
 #[rtic::app(device = atsamx7x_hal::target_device, dispatchers = [])]
 mod app {
     use atsamx7x_hal as hal;
-    use cortex_m_semihosting::hprintln;
     use hal::ehal::watchdog::WatchdogDisable;
-    use x7x_usb::PeripheralIdentifiers;
+    use rtt_target::{rprintln, rtt_init_print};
 
     #[shared]
     struct Shared {}
@@ -23,24 +22,51 @@ mod app {
 
     #[init]
     fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {
-        hprintln!("init");
+        rtt_init_print!();
+        rprintln!("init");
         // Disable the watchdog.
         hal::watchdog::Watchdog::new(ctx.device.WDT).disable();
 
         let pmc = ctx.device.PMC;
         let pioa = ctx.device.PIOA;
+        let utmi = ctx.device.UTMI;
 
         // clock enable to pioa (peripheral identifier 10)
         pmc.pmc_pcer0.write(|w| w.pid10().set_bit());
         while pmc.pmc_pcsr0.read().pid10().bit_is_clear() {}
 
-        // Clock setup for Master/128, See 31.3
-        // disable clk0
-        pmc.pmc_scdr.write(|w| w.pck0().set_bit());
+        // setup main crystal oscillator
+        pmc.ckgr_mor.modify(|_, w| {
+            w.key().passwd();
+            w.moscxtby().clear_bit();
+            w.moscxten().set_bit();
+            unsafe {
+                w.moscxtst().bits(u8::MAX); // 62 ms?
+            }
+            w
+        });
 
-        // master clock with a prescaler 128
+        // Wait until oscillator is stable.
+        while pmc.pmc_sr.read().moscxts().bit_is_clear() {}
+
+        // Configure the UTMI PLL clock and wait for lock.
+        utmi.utmi_cktrim.modify(|_, w| w.freq().xtal12());
+        pmc.ckgr_uckr.modify(|_, w| {
+            w.upllen().set_bit();
+            unsafe {
+                w.upllcount().bits(u8::MAX);
+            }
+            w
+        });
+        // Wait until UTMI_PLL is stable.
+        while pmc.pmc_sr.read().locku().bit_is_clear() {}
+
+        // Set divider to two
+        pmc.pmc_mckr.modify(|_, w| w.uplldiv2().set_bit());
+
+        // master clock with a prescaler 100 (2.4 MHz expected)
         // (HW adds 1 to prescaler value)
-        pmc.pmc_pck[0].write(|w| unsafe { w.css().mck().pres().bits(128 - 1) });
+        pmc.pmc_pck[0].write(|w| unsafe { w.css().upll_clk().pres().bits(100 - 1) });
 
         // Enable PCK0.
         pmc.pmc_scer.write(|w| w.pck0().set_bit());
@@ -71,7 +97,7 @@ mod app {
 
     #[idle]
     fn idle(_cx: idle::Context) -> ! {
-        hprintln!("idle");
+        rprintln!("idle");
 
         loop {}
     }

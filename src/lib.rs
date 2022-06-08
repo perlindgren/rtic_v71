@@ -8,6 +8,10 @@ use usb_device::{
 };
 
 use bare_metal::Mutex;
+use cortex_m_semihosting::hprintln;
+
+mod peripheral_identifiers;
+pub use peripheral_identifiers::PeripheralIdentifiers;
 
 use atsamx7x_hal::target_device as pac;
 
@@ -44,7 +48,7 @@ pub struct Usbd {
     iso_out_used: bool,
     // ep0_state: Mutex<Cell<EP0State>>,
     // busy_in_endpoints: Mutex<Cell<u16>>,
-    xfer_status: [XferStatus; MAX_ENDPOINTS],
+    xfer_status: [Option<XferStatus>; MAX_ENDPOINTS],
 }
 
 // Transfer control context
@@ -66,9 +70,9 @@ impl Usbd {
     ///
     /// # Parameters
     ///
-    /// * `periph`: The raw USBD peripheral.
+    /// * `periph`: The raw USBD peripheral. (assume initialized)
     #[inline]
-    pub fn new(periph: pac::USBHS) -> UsbBusAllocator<Self> {
+    pub fn new(usb_hs: pac::USBHS) -> UsbBusAllocator<Self> {
         UsbBusAllocator::new(Self {
             max_packet_size_0: 0,
             // bufs: Buffers::new(),
@@ -83,7 +87,7 @@ impl Usbd {
             //     is_set_address: false,
             // })),
             // busy_in_endpoints: Mutex::new(Cell::new(0)),
-            xfer_status: [XferStatus { max_packet_size: 0 }; MAX_ENDPOINTS],
+            xfer_status: [None; MAX_ENDPOINTS],
         })
     }
 }
@@ -92,30 +96,68 @@ impl UsbBus for Usbd {
     fn alloc_ep(
         &mut self,
         ep_dir: UsbDirection,
-        ep_addr: Option<EndpointAddress>,
+        mut ep_addr: Option<EndpointAddress>,
         ep_type: EndpointType,
         ep_max_packet_size: u16,
         interval: u8,
     ) -> Result<EndpointAddress> {
+        hprintln!(
+            "alloc_ep: dir {:?}, addr {:?}, type {:?}, max_size {:?}",
+            ep_dir,
+            ep_addr,
+            ep_type,
+            ep_max_packet_size
+        );
+
+        // create end point address if None
+        // not sure if we should allow automatic allocation of ep0?
+        // (right now auto allocation starts from ep1)
+        if ep_addr.is_none() {
+            ep_addr = Some(EndpointAddress::from_parts(
+                match self.xfer_status[1..]
+                    .iter()
+                    .enumerate()
+                    .find(|(_, x)| x.is_none())
+                {
+                    Some((index, _)) => index + 1,
+                    None => return Err(UsbError::EndpointOverflow),
+                },
+                ep_dir,
+            ));
+        }
+
+        hprintln!(
+            "alloc_ep: dir {:?}, addr {:?}, type {:?}, max_size {:?}",
+            ep_dir,
+            ep_addr,
+            ep_type,
+            ep_max_packet_size
+        );
+
         // for now assume ep_addr set
-        let ep_index: u8 = ep_addr.unwrap().into();
-        let ep_index = ep_index as usize;
+        let ep_index = ep_addr.unwrap().index();
+        hprintln!("ep_index {}", ep_index);
 
         // check endpoint address, only 0..9 allowed
-        if ep_index > 9 && ep_max_packet_size <= 1024 {
+        if ep_index > 9 || ep_max_packet_size > 1024 {
+            hprintln!("invalid index or size");
             return Err(UsbError::InvalidEndpoint);
         }
 
         // Safety: Usbd owns the USBHS
         let usb_hs = unsafe { &*pac::USBHS::ptr() };
 
-        self.xfer_status[ep_index].max_packet_size = ep_max_packet_size;
+        self.xfer_status[ep_index] = Some(XferStatus {
+            max_packet_size: ep_max_packet_size,
+        });
 
         // Per: not sure if the below is needed
         // Note to self: Depends how the actual reset/allocation is done in HW
         // USB_REG->DEVEPT &=~(1 << (DEVEPT_EPRST0_Pos + epnum));
 
         // reset endpoint
+        hprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
+
         usb_hs.usbhs_devept.modify(|_, w| match ep_index {
             0 => w.eprst0().set_bit(),
             1 => w.eprst1().set_bit(),
@@ -131,6 +173,8 @@ impl UsbBus for Usbd {
             _ => unreachable!(),
         });
 
+        hprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
+
         // enable endpoint
         usb_hs.usbhs_devept.modify(|_, w| match ep_index {
             0 => w.epen0().set_bit(),
@@ -145,6 +189,8 @@ impl UsbBus for Usbd {
             9 => w.epen9().set_bit(),
             _ => unreachable!(),
         });
+
+        hprintln!("reset and enable {:x}", usb_hs.usbhs_devept.read().bits());
 
         // generic configuration
         usb_hs.usbhs_deveptcfg[ep_index].write(|w| {
@@ -169,12 +215,13 @@ impl UsbBus for Usbd {
 
         if ep_index == 0 {
             // Configure the Endpoint 0 configuration register
-            usb_hs.usbhs_deveptcfg[0].write(|w| {
+            usb_hs.usbhs_deveptcfg[0].modify(|_, w| {
                 // set end point type to CTRL
                 w.eptype().ctrl()
             });
         } else {
-            usb_hs.usbhs_deveptcfg[ep_index].write(|w| {
+            hprintln!("ep {}", ep_index);
+            usb_hs.usbhs_deveptcfg[ep_index].modify(|_, w| {
                 // set end point type
                 w.eptype().bits(ep_type as u8);
 
@@ -228,6 +275,7 @@ impl UsbBus for Usbd {
 
             Ok(ep_addr.unwrap())
         } else {
+            hprintln!("endpoint failed");
             Err(UsbError::InvalidEndpoint)
         }
     }
@@ -235,6 +283,7 @@ impl UsbBus for Usbd {
     fn enable(&mut self) {
         unimplemented!()
     }
+
     fn reset(&self) {
         unimplemented!()
     }
