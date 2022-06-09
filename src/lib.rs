@@ -1,6 +1,8 @@
 #![no_main]
 #![no_std]
 
+use core::task::Poll;
+
 use usb_device::{
     bus::{PollResult, UsbBus, UsbBusAllocator},
     endpoint::{EndpointAddress, EndpointDirection, EndpointType},
@@ -8,7 +10,7 @@ use usb_device::{
 };
 
 use bare_metal::Mutex;
-use cortex_m_semihosting::hprintln;
+use rtt_target::rprintln;
 
 mod peripheral_identifiers;
 pub use peripheral_identifiers::PeripheralIdentifiers;
@@ -25,19 +27,8 @@ use atsamx7x_hal::target_device as pac;
 //     }
 // }
 
-/// A trait for device-specific USB peripherals. Implement this to add support for a new hardware
-/// platform. Peripherals that have this trait must have the same register block as NRF52 USBD
-/// peripherals.
-// pub unsafe trait UsbPeripheralTrait: Send {
-//     /// Pointer to the register block
-//     const REGISTERS: *const ();
-// }
-
-// unsafe impl UsbPeripheralTrait for UsbPeripheral {
-//     const REGISTERS: *const () = pac::USBHS::ptr() as *const _;
-// }
-
 /// USB device implementation.
+#[derive(Debug)]
 pub struct Usbd {
     // argument passed to `UsbDeviceBuilder.max_packet_size_0`
     max_packet_size_0: u16,
@@ -72,7 +63,7 @@ impl Usbd {
     ///
     /// * `periph`: The raw USBD peripheral. (assume initialized)
     #[inline]
-    pub fn new(usb_hs: pac::USBHS) -> UsbBusAllocator<Self> {
+    pub fn new(_usb_hs: pac::USBHS) -> UsbBusAllocator<Self> {
         UsbBusAllocator::new(Self {
             max_packet_size_0: 0,
             // bufs: Buffers::new(),
@@ -101,7 +92,7 @@ impl UsbBus for Usbd {
         ep_max_packet_size: u16,
         interval: u8,
     ) -> Result<EndpointAddress> {
-        hprintln!(
+        rprintln!(
             "alloc_ep: dir {:?}, addr {:?}, type {:?}, max_size {:?}",
             ep_dir,
             ep_addr,
@@ -110,9 +101,8 @@ impl UsbBus for Usbd {
         );
 
         // create end point address if None
-        // not sure if we should allow automatic allocation of ep0?
-        // (right now auto allocation starts from ep1)
         if ep_addr.is_none() {
+            // find next free endpoint
             ep_addr = Some(EndpointAddress::from_parts(
                 match self.xfer_status[1..]
                     .iter()
@@ -126,7 +116,7 @@ impl UsbBus for Usbd {
             ));
         }
 
-        hprintln!(
+        rprintln!(
             "alloc_ep: dir {:?}, addr {:?}, type {:?}, max_size {:?}",
             ep_dir,
             ep_addr,
@@ -134,13 +124,15 @@ impl UsbBus for Usbd {
             ep_max_packet_size
         );
 
-        // for now assume ep_addr set
         let ep_index = ep_addr.unwrap().index();
-        hprintln!("ep_index {}", ep_index);
+        rprintln!("ep_index {}", ep_index);
 
-        // check endpoint address, only 0..9 allowed
-        if ep_index > 9 || ep_max_packet_size > 1024 {
-            hprintln!("invalid index or size");
+        // check endpoint address,
+        // only 0..=9 allowed
+        // ep 0 max size 64
+        // ep 1..=9 max size 1024
+        if ep_index > 9 || ep_max_packet_size > 1024 || (ep_index == 0 && ep_max_packet_size > 64) {
+            rprintln!("invalid index or size");
             return Err(UsbError::InvalidEndpoint);
         }
 
@@ -156,7 +148,7 @@ impl UsbBus for Usbd {
         // USB_REG->DEVEPT &=~(1 << (DEVEPT_EPRST0_Pos + epnum));
 
         // reset endpoint
-        hprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
+        rprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
 
         usb_hs.usbhs_devept.modify(|_, w| match ep_index {
             0 => w.eprst0().set_bit(),
@@ -173,7 +165,7 @@ impl UsbBus for Usbd {
             _ => unreachable!(),
         });
 
-        hprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
+        rprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
 
         // enable endpoint
         usb_hs.usbhs_devept.modify(|_, w| match ep_index {
@@ -190,7 +182,7 @@ impl UsbBus for Usbd {
             _ => unreachable!(),
         });
 
-        hprintln!("reset and enable {:x}", usb_hs.usbhs_devept.read().bits());
+        rprintln!("reset and enable {:x}", usb_hs.usbhs_devept.read().bits());
 
         // generic configuration
         usb_hs.usbhs_deveptcfg[ep_index].write(|w| {
@@ -209,18 +201,25 @@ impl UsbBus for Usbd {
             // set bank
             w.epbk()._1_bank();
 
+            // direction,
+            // 0 (OUT): The endpoint direction is OUT.
+            // 1 (IN): The endpoint direction is IN (nor for control endpoints).
+            w.epdir().bit(ep_dir == UsbDirection::In);
+
             // force allocation
             w.alloc().set_bit()
         });
 
         if ep_index == 0 {
+            rprintln!("ep {} - set ctrl", ep_index);
+            // ep0 used as ctrl endpoint
             // Configure the Endpoint 0 configuration register
             usb_hs.usbhs_deveptcfg[0].modify(|_, w| {
                 // set end point type to CTRL
                 w.eptype().ctrl()
             });
         } else {
-            hprintln!("ep {}", ep_index);
+            rprintln!("ep {} - set {:?}", ep_index, ep_type);
             usb_hs.usbhs_deveptcfg[ep_index].modify(|_, w| {
                 // set end point type
                 w.eptype().bits(ep_type as u8);
@@ -233,8 +232,7 @@ impl UsbBus for Usbd {
                     w.nbtrans()._1_trans();
                 }
 
-                // direction
-                w.epdir().bit(ep_dir == UsbDirection::Out)
+                w
             });
 
             // todo, dual bank
@@ -275,159 +273,94 @@ impl UsbBus for Usbd {
 
             Ok(ep_addr.unwrap())
         } else {
-            hprintln!("endpoint failed");
+            rprintln!("endpoint failed");
             Err(UsbError::InvalidEndpoint)
         }
     }
 
     fn enable(&mut self) {
-        unimplemented!()
+        rprintln!("enable {:?}", self);
     }
 
     fn reset(&self) {
-        unimplemented!()
+        rprintln!("reset {:?}", self);
     }
+
     fn set_device_address(&self, addr: u8) {
-        unimplemented!()
+        rprintln!("set_device_address {:?}", self);
     }
+
     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> Result<usize> {
-        unimplemented!()
+        rprintln!("write {:?}", self);
+        rprintln!("ep_addr {:?}", ep_addr);
+        rprintln!("buf {:?}", buf);
+
+        Err(UsbError::Unsupported)
     }
+
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
-        unimplemented!()
+        rprintln!("write {:?}", self);
+        rprintln!("ep_addr {:?}", ep_addr);
+        rprintln!("buf {:?}", buf);
+
+        Err(UsbError::Unsupported)
     }
+
     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
-        unimplemented!()
+        rprintln!("set_stalled {:?}, {:?}", self, stalled);
+        rprintln!("ep_addr {:?}", ep_addr);
     }
+
     fn is_stalled(&self, ep_addr: EndpointAddress) -> bool {
-        unimplemented!()
+        rprintln!("is_stalled {:?}", self);
+        rprintln!("ep_addr {:?}", ep_addr);
+        false
     }
+
     fn suspend(&self) {
-        unimplemented!()
+        rprintln!("suspend {:?}", self);
     }
+
     fn resume(&self) {
-        unimplemented!()
+        rprintln!("resume {:?}", self);
     }
+
     fn poll(&self) -> PollResult {
-        unimplemented!()
+        rprintln!("poll {:?}", self);
+        PollResult::None
     }
 }
 
-// struct USB {}
+// EP_GET_FIFO_PTR(ep, scale) (((TU_XSTRCAT(TU_STRCAT(uint, scale),_t) (*)[0x8000 / ((scale) / 8)])FIFO_RAM_ADDR)[(ep)])
+// FIFO_RAM_ADDR     0xA0100000u
 
-// pub struct UsbB<USB> {
-//     peripheral: USB,
-//     //     regs: Mutex<UsbRegisters>,
-//     //     allocator: EndpointAllocator<USB>,
-// }
-
-// /// USB peripheral driver
-
-// impl<USB: UsbBus> UsbB<USB> {
-//     /// Constructs a new USB peripheral driver.
-//     pub fn new(peripheral: USB, ep_memory: &'static mut [u32]) -> UsbBusAllocator<Self> {
-//         //         let bus = UsbBus {
-//         //             peripheral,
-//         //             // regs: Mutex::new(UsbRegisters::new::<USB>()),
-//         //             // allocator: EndpointAllocator::new(ep_memory),
-//         //         };
-
-//         //         UsbBusAllocator::new(bus)
-//         unimplemented!()
+// uint16_t len = (uint16_t)(xfer->total_len - xfer->queued_len);
+//   if (len)
+//   {
+//     if (len > xfer->max_packet_size)
+//     {
+//       len = xfer->max_packet_size;
 //     }
-// }
-
-// impl<USB: UsbBus> UsbBus for UsbB<USB> {
-//     const QUIRK_SET_ADDRESS_BEFORE_STATUS: bool = false;
-
-//     fn alloc_ep(
-//         &mut self,
-//         ep_dir: UsbDirection,
-//         ep_addr: Option<EndpointAddress>,
-//         ep_type: EndpointType,
-//         max_packet_size: u16,
-//         interval: u8,
-//     ) -> Result<EndpointAddress> {
-//         unimplemented!()
+//     uint8_t *ptr = EP_GET_FIFO_PTR(ep_ix,8);
+//     if(xfer->buffer)
+//     {
+//       memcpy(ptr, xfer->buffer + xfer->queued_len, len);
 //     }
-
-//     fn enable(&mut self) {
-//         unimplemented!()
+//     else
+//     {
+//       tu_fifo_read_n(xfer->fifo, ptr, len);
 //     }
-//     fn reset(&self) {
-//         unimplemented!()
-//     }
-//     fn set_device_address(&self, addr: u8) {
-//         unimplemented!()
-//     }
-//     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> Result<usize> {
-//         unimplemented!()
-//     }
-//     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
-//         unimplemented!()
-//     }
-//     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
-//         unimplemented!()
-//     }
-//     fn is_stalled(&self, ep_addr: EndpointAddress) -> bool {
-//         unimplemented!()
-//     }
-//     fn suspend(&self) {
-//         unimplemented!()
-//     }
-//     fn resume(&self) {
-//         unimplemented!()
-//     }
-//     fn poll(&self) -> PollResult {
-//         unimplemented!()
-//     }
-// }
-
-// impl UsbBus for USB {
-//     const QUIRK_SET_ADDRESS_BEFORE_STATUS: bool = false;
-
-//     fn alloc_ep(
-//         &mut self,
-//         ep_dir: UsbDirection,
-//         ep_addr: Option<EndpointAddress>,
-//         ep_type: EndpointType,
-//         max_packet_size: u16,
-//         interval: u8,
-//     ) -> Result<EndpointAddress> {
-//         unimplemented!()
-//     }
-
-//     fn enable(&mut self) {
-//         unimplemented!()
-//     }
-//     fn reset(&self) {
-//         unimplemented!()
-//     }
-//     fn set_device_address(&self, addr: u8) {
-//         unimplemented!()
-//     }
-//     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> Result<usize> {
-//         unimplemented!()
-//     }
-//     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
-//         unimplemented!()
-//     }
-//     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
-//         unimplemented!()
-//     }
-//     fn is_stalled(&self, ep_addr: EndpointAddress) -> bool {
-//         unimplemented!()
-//     }
-//     fn suspend(&self) {
-//         unimplemented!()
-//     }
-//     fn resume(&self) {
-//         unimplemented!()
-//     }
-//     fn poll(&self) -> PollResult {
-//         unimplemented!()
-//     }
-
-//     // Has default implementation
-//     // fn force_reset(&self) -> Result<()> { ... }
-// }
+//     __DSB();
+//     __ISB();
+//     xfer->queued_len = (uint16_t)(xfer->queued_len + len);
+//   }
+//   if (ep_ix == 0U)
+//   {
+//     // Control endpoint: clear the interrupt flag to send the data
+//     USB_REG->DEVEPTICR[0] = DEVEPTICR_TXINIC;
+//   } else
+//   {
+//     // Other endpoint types: clear the FIFO control flag to send the data
+//     USB_REG->DEVEPTIDR[ep_ix] = DEVEPTIDR_FIFOCONC;
+//   }
+//   USB_REG->DEVEPTIER[ep_ix] = DEVEPTIER_TXINES;

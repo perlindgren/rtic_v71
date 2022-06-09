@@ -19,7 +19,7 @@ embedded-hal = "0.2.7"
 # panic-itm = "0.4.2"
 
 # Uncomment for the semihosting examples.
-panic-semihosting = "0.6.0"
+# panic-semihosting = "0.6.0"
 
 # Tracing
 # rtt-target = { version = "0.3.1", features = ["cortex-m"] }
