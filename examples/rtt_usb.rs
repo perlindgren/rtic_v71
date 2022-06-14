@@ -13,6 +13,7 @@ mod app {
 
     use atsamx7x_hal as hal;
 
+    use cortex_m::asm;
     use hal::ehal::watchdog::WatchdogDisable;
     use rtt_target::{rprintln, rtt_init_print};
     use usb_device::prelude::*;
@@ -47,6 +48,27 @@ mod app {
             w.frzclk().clear_bit() // enable clocking
         });
 
+        // wait until clock stable
+        // while usb_hs.usbhs_sr.read().clkusable().bit_is_clear() {}
+
+        // enable interrupts
+        usb_hs.usbhs_devier.write(|w| {
+            w.eorstes().set_bit();
+            w.suspes().set_bit();
+            w.wakeupes().set_bit();
+            w.sofes().set_bit()
+        });
+
+        // clear interrupts
+        usb_hs.usbhs_devicr.write(|w| {
+            w.eorstc().set_bit();
+            w.sofc().set_bit();
+            w.wakeupc().set_bit()
+        });
+
+        // Manually set the Suspend Interrupt
+        usb_hs.usbhs_devifr.write(|w| w.susps().set_bit());
+
         // check mode, probably not valid unless reset by host
         rprintln!(
             "speed {:?}",
@@ -80,6 +102,9 @@ mod app {
         // Wait until UTMI_PLL is stable.
         while pmc.pmc_sr.read().locku().bit_is_clear() {}
 
+        // Per: Note
+        // Here we might want to setup the USB_FS clock as well
+
         rprintln!("clock init");
 
         let usb_bus = Usbd::new(usb_hs);
@@ -90,14 +115,17 @@ mod app {
             .product("Serial port")
             .serial_number("TEST")
             .device_class(0xff)
-            // .max_packet_size_0(64) // (makes control transfers 8x faster)
+            .max_packet_size_0(64) // (makes control transfers 8x faster)
             .build();
 
         rprintln!("usb device");
         loop {
-            // if !usb_dev.poll(&mut []) {
-            //     continue;
-            // }
+            let _ = usb_dev.poll(&mut []);
+
+            rprintln!(".");
+            for i in 0..1_000_000 {
+                asm::nop();
+            }
         }
 
         (Shared {}, Local {}, init::Monotonics())

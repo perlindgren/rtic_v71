@@ -280,6 +280,41 @@ impl UsbBus for Usbd {
 
     fn enable(&mut self) {
         rprintln!("enable {:?}", self);
+
+        // Per: Not sure if this should go here
+        // For now we setup the usb device in `init`
+        //
+        //   (void) rhport;
+        //   dcd_int_disable(rhport);
+        //   // Enable the USB controller in device mode
+        //   USB_REG->CTRL = CTRL_UIMOD | CTRL_USBE;
+        //   while (!(USB_REG->SR & SR_CLKUSABLE));
+        //   #if TUD_OPT_HIGH_SPEED
+        //     USB_REG->DEVCTRL &= ~DEVCTRL_SPDCONF;
+        //   #else
+        //     USB_REG->DEVCTRL |= DEVCTRL_SPDCONF_LOW_POWER;
+        //   #endif
+        //   // Enable the End Of Reset, Suspend & Wakeup interrupts
+        //   USB_REG->DEVIER = (DEVIER_EORSTES | DEVIER_SUSPES | DEVIER_WAKEUPES);
+        //   #if USE_SOF
+        //     USB_REG->DEVIER = DEVIER_SOFES;
+        //   #endif
+        //   // Clear the End Of Reset, SOF & Wakeup interrupts
+        //   USB_REG->DEVICR = (DEVICR_EORSTC | DEVICR_SOFC | DEVICR_WAKEUPC);
+        //   // Manually set the Suspend Interrupt
+        //   USB_REG->DEVIFR |= DEVIFR_SUSPS;
+        //   // Ack the Wakeup Interrupt
+        //   USB_REG->DEVICR = DEVICR_WAKEUPC;
+        //   // Attach the device
+        //   USB_REG->DEVCTRL &= ~DEVCTRL_DETACH;
+        //   // Freeze USB clock
+        //   USB_REG->CTRL |= CTRL_FRZCLK;
+
+        // For now only clear detach here
+        // Essentially attaching the device
+        // Safety: Usbd owns the USBHS
+        let usb_hs = unsafe { &*pac::USBHS::ptr() };
+        usb_hs.usbhs_devctrl.modify(|_, w| w.detach().clear_bit());
     }
 
     fn reset(&self) {
@@ -327,9 +362,140 @@ impl UsbBus for Usbd {
 
     fn poll(&self) -> PollResult {
         rprintln!("poll {:?}", self);
+
+        // Safety: Usbd owns the USBHS
+        let usb_hs = unsafe { &*pac::USBHS::ptr() };
+
+        let dev_isr = usb_hs.usbhs_devisr.read();
+        rprintln!("dev_irs : {:#010x}", dev_isr.bits());
+
+        if dev_isr.eorsm().bit_is_set() {
+            rprintln!("eorsm")
+        }
+
+        if dev_isr.msof().bit_is_set() {
+            rprintln!("msof")
+        }
+
+        if dev_isr.pep_0().bit_is_set() {
+            rprintln!("pep_0")
+        }
+
+        if dev_isr.sof().bit_is_set() {
+            rprintln!("sof")
+        }
+
+        if dev_isr.susp().bit_is_set() {
+            rprintln!("susp")
+        }
+
+        if dev_isr.uprsm().bit_is_set() {
+            rprintln!("uprsm")
+        }
+
+        if dev_isr.wakeup().bit_is_set() {
+            rprintln!("wakeup");
+            // USB_REG->DEVICR = DEVICR_WAKEUPC;
+            // USB_REG->DEVIDR = DEVIDR_WAKEUPEC;
+            // USB_REG->DEVIER = DEVIER_SUSPES;
+
+            // dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
+
+            // clear the wakeup interrupt
+            usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
+            // disable the interrupt
+            usb_hs.usbhs_devidr.write(|w| w.wakeupec().set_bit());
+        }
+
+        //USB_REG->DEVISR;
+
+        // uint32_t int_status = USB_REG->DEVEPTISR[ep_ix];
+        // int_status &= USB_REG->DEVEPTIMR[ep_ix];
+
+        // uint16_t count = (USB_REG->DEVEPTISR[ep_ix] &
+        //                   DEVEPTISR_BYCT) >> DEVEPTISR_BYCT_Pos;
+        // xfer_ctl_t *xfer = &xfer_status[ep_ix];
         PollResult::None
     }
 }
+
+// void dcd_int_handler(uint8_t rhport)
+// {
+//   (void) rhport;
+//   uint32_t int_status = USB_REG->DEVISR;
+//   int_status &= USB_REG->DEVIMR;
+//   // End of reset interrupt
+//   if (int_status & DEVISR_EORST)
+//   {
+//     // Unfreeze USB clock
+//     USB_REG->CTRL &= ~CTRL_FRZCLK;
+//     while(!(USB_REG->SR & SR_CLKUSABLE));
+//     // Reset all endpoints
+//     for (int ep_ix = 1; ep_ix < EP_MAX; ep_ix++)
+//     {
+//       USB_REG->DEVEPT |= 1 << (DEVEPT_EPRST0_Pos + ep_ix);
+//       USB_REG->DEVEPT &=~(1 << (DEVEPT_EPRST0_Pos + ep_ix));
+//     }
+//     dcd_edpt_open (0, &ep0_desc);
+//     USB_REG->DEVICR = DEVICR_EORSTC;
+//     USB_REG->DEVICR = DEVICR_WAKEUPC;
+//     USB_REG->DEVICR = DEVICR_SUSPC;
+//     USB_REG->DEVIER = DEVIER_SUSPES;
+
+//     dcd_event_bus_reset(rhport, get_speed(), true);
+//   }
+//   // End of Wakeup interrupt
+//   if (int_status & DEVISR_WAKEUP)
+//   {
+//     USB_REG->CTRL &= ~CTRL_FRZCLK;
+//     while (!(USB_REG->SR & SR_CLKUSABLE));
+//     USB_REG->DEVICR = DEVICR_WAKEUPC;
+//     USB_REG->DEVIDR = DEVIDR_WAKEUPEC;
+//     USB_REG->DEVIER = DEVIER_SUSPES;
+
+//     dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
+//   }
+//   // Suspend interrupt
+//   if (int_status & DEVISR_SUSP)
+//   {
+//     // Unfreeze USB clock
+//     USB_REG->CTRL &= ~CTRL_FRZCLK;
+//     while (!(USB_REG->SR & SR_CLKUSABLE));
+//     USB_REG->DEVICR = DEVICR_SUSPC;
+//     USB_REG->DEVIDR = DEVIDR_SUSPEC;
+//     USB_REG->DEVIER = DEVIER_WAKEUPES;
+//     USB_REG->CTRL |= CTRL_FRZCLK;
+
+//     dcd_event_bus_signal(0, DCD_EVENT_SUSPEND, true);
+//   }
+// #if USE_SOF
+//   if(int_status & DEVISR_SOF)
+//   {
+//     USB_REG->DEVICR = DEVICR_SOFC;
+
+//     dcd_event_bus_signal(0, DCD_EVENT_SOF, true);
+//   }
+// #endif
+//   // Endpoints interrupt
+//   for (int ep_ix = 0; ep_ix < EP_MAX; ep_ix++)
+//   {
+//     if (int_status & (DEVISR_PEP_0 << ep_ix))
+//     {
+//       dcd_ep_handler(ep_ix);
+//     }
+//   }
+//   // Endpoints DMA interrupt
+//   for (int ep_ix = 0; ep_ix < EP_MAX; ep_ix++)
+//   {
+//     if (EP_DMA_SUPPORT(ep_ix))
+//     {
+//       if (int_status & (DEVISR_DMA_1 << (ep_ix - 1)))
+//       {
+//         dcd_dma_handler(ep_ix);
+//       }
+//     }
+//   }
+// }
 
 // EP_GET_FIFO_PTR(ep, scale) (((TU_XSTRCAT(TU_STRCAT(uint, scale),_t) (*)[0x8000 / ((scale) / 8)])FIFO_RAM_ADDR)[(ep)])
 // FIFO_RAM_ADDR     0xA0100000u

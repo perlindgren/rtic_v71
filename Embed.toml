@@ -65,19 +65,19 @@ enabled = true
 #              BinaryLE - Display as raw hex
 channels = [
    { up = 0, down = 0, name = "idle", format = "String" },
-   { up = 1, name = "log", up_mode = "BlockIfFull", format = "String" },
+   #{ up = 1, name = "log", up_mode = "BlockIfFull", format = "String" },
 ]
 # The duration in ms for which the logger should retry to attach to RTT.
 timeout = 3000
 # Whether timestamps in the RTTUI are enabled
 show_timestamps = true
 # Whether to save rtt history buffer on exit.
-log_enabled = false
+log_enabled = true
 # Where to save rtt history buffer relative to manifest path.
 log_path = "./logs"
 
 [default.gdb]
 # Whether or not a GDB server should be opened after flashing.
-enabled = true
+enabled = false
 # The connection string in host:port format wher the GDB server will open a socket.
 gdb_connection_string = "127.0.0.1:3333"
