@@ -10,8 +10,10 @@ use usb_device::{
 };
 
 use bare_metal::Mutex;
-use rtt_target::rprintln;
+// use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
+use rtt_target::rprintln;
 mod peripheral_identifiers;
 pub use peripheral_identifiers::PeripheralIdentifiers;
 
@@ -39,7 +41,25 @@ pub struct Usbd {
     iso_out_used: bool,
     // ep0_state: Mutex<Cell<EP0State>>,
     // busy_in_endpoints: Mutex<Cell<u16>>,
+    // status
+    connected: AtomicBool,
+    addressed: AtomicBool,
+    cfg_num: AtomicBool,
+    suspended: AtomicBool,
     xfer_status: [Option<XferStatus>; MAX_ENDPOINTS],
+}
+
+#[derive(Debug)]
+enum EventType {
+    Unplugged,
+    Suspend,
+    Resume,
+    Sof,
+}
+
+#[derive(Debug)]
+struct Event {
+    event_type: EventType,
 }
 
 // Transfer control context
@@ -78,6 +98,10 @@ impl Usbd {
             //     is_set_address: false,
             // })),
             // busy_in_endpoints: Mutex::new(Cell::new(0)),
+            connected: AtomicBool::new(false),
+            addressed: AtomicBool::new(false),
+            cfg_num: AtomicBool::new(false),
+            suspended: AtomicBool::new(false),
             xfer_status: [None; MAX_ENDPOINTS],
         })
     }
@@ -386,7 +410,27 @@ impl UsbBus for Usbd {
         }
 
         if dev_isr.susp().bit_is_set() {
-            rprintln!("susp")
+            rprintln!("susp");
+            // Unfreeze USB clock
+            // USB_REG->CTRL &= ~CTRL_FRZCLK;
+            // while (!(USB_REG->SR & SR_CLKUSABLE));
+            // USB_REG->DEVICR = DEVICR_SUSPC;
+            // USB_REG->DEVIDR = DEVIDR_SUSPEC;
+            // USB_REG->DEVIER = DEVIER_WAKEUPES;
+            // USB_REG->CTRL |= CTRL_FRZCLK;
+
+            // dcd_event_bus_signal(0, DCD_EVENT_SUSPEND, true);
+
+            // Per: for now we let the usb be clocked, just handle the HW events
+            // clear the susp interrupt
+            usb_hs.usbhs_devicr.write(|w| w.suspc().set_bit());
+            // disable the susp interrupt
+            usb_hs.usbhs_devidr.write(|w| w.suspec().set_bit());
+            // enable the wakeup interrupt
+            usb_hs.usbhs_devier.write(|w| w.wakeupes().set_bit());
+            self.event_handler(Event {
+                event_type: EventType::Suspend,
+            });
         }
 
         if dev_isr.uprsm().bit_is_set() {
@@ -403,8 +447,59 @@ impl UsbBus for Usbd {
 
             // clear the wakeup interrupt
             usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
-            // disable the interrupt
+            // disable wakeup the interrupt
             usb_hs.usbhs_devidr.write(|w| w.wakeupec().set_bit());
+            // enable the susp interrupt
+            usb_hs.usbhs_devier.write(|w| w.suspes().set_bit());
+            // event
+
+            // dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
+            // dcd_event_t event = { .rhport = rhport, .event_id = eid };
+            // dcd_event_handler(&event, in_isr);
+            self.event_handler(Event {
+                event_type: EventType::Resume,
+            })
+        }
+
+        // Endpoints interrupt
+        //   for (int ep_ix = 0; ep_ix < EP_MAX; ep_ix++)
+        //   {
+        //     if (int_status & (DEVISR_PEP_0 << ep_ix))
+        //     {
+        //       dcd_ep_handler(ep_ix);
+        //     }
+        //   }
+
+        // a bit ugly
+        if dev_isr.pep_0().bit_is_set() {
+            rprintln!("pep0");
+        }
+        if dev_isr.pep_1().bit_is_set() {
+            rprintln!("pep1");
+        }
+        if dev_isr.pep_2().bit_is_set() {
+            rprintln!("pep2");
+        }
+        if dev_isr.pep_3().bit_is_set() {
+            rprintln!("pep3");
+        }
+        if dev_isr.pep_4().bit_is_set() {
+            rprintln!("pep4");
+        }
+        if dev_isr.pep_5().bit_is_set() {
+            rprintln!("pep5");
+        }
+        if dev_isr.pep_6().bit_is_set() {
+            rprintln!("pep6");
+        }
+        if dev_isr.pep_7().bit_is_set() {
+            rprintln!("pep7");
+        }
+        if dev_isr.pep_8().bit_is_set() {
+            rprintln!("pep8");
+        }
+        if dev_isr.pep_9().bit_is_set() {
+            rprintln!("pep9");
         }
 
         //USB_REG->DEVISR;
@@ -419,6 +514,51 @@ impl UsbBus for Usbd {
     }
 }
 
+impl Usbd {
+    fn event_handler(&self, event: Event) {
+        match event.event_type {
+            EventType::Unplugged => {
+                rprintln!("event_handler: unplugged");
+                self.connected.store(false, Ordering::Release);
+                self.addressed.store(false, Ordering::Release);
+                self.cfg_num.store(false, Ordering::Release);
+                self.suspended.store(false, Ordering::Release);
+            }
+
+            EventType::Suspend => {
+                rprintln!("event_handler: suspend");
+                // NOTE: When plugging/unplugging device, the D+/D- state are unstable and
+                // can accidentally meet the SUSPEND condition ( Bus Idle for 3ms ).
+                // In addition, some MCUs such as SAMD or boards that haven no VBUS detection cannot distinguish
+                // suspended vs disconnected. We will skip handling SUSPEND/RESUME event if not currently connected
+                if self.connected.load(Ordering::Acquire) {
+                    self.suspended.store(true, Ordering::Release);
+                    //         osal_queue_send(_usbd_q, event, in_isr);
+                }
+            }
+            EventType::Resume => {
+                rprintln!("event_handler: resume");
+                // skip event if not connected (especially required for SAMD)
+                if self.connected.load(Ordering::Acquire) {
+                    self.suspended.store(false, Ordering::Release);
+                    //         osal_queue_send(_usbd_q, event, in_isr);
+                }
+            }
+            EventType::Sof => {
+                rprintln!("event_handler: sof");
+                // Some MCUs after running dcd_remote_wakeup() does not have way to detect the end of remote wakeup
+                // which last 1-15 ms. DCD can use SOF as a clear indicator that bus is back to operational
+                if self.suspended.load(Ordering::Acquire) {
+                    self.suspended.store(false, Ordering::Release);
+                    //         dcd_event_t const event_resume = { .rhport = event->rhport, .event_id = DCD_EVENT_RESUME };
+                    //         osal_queue_send(_usbd_q, &event_resume, in_isr);
+                }
+            } // default:
+              //       osal_queue_send(_usbd_q, event, in_isr);
+              //     break;
+        }
+    }
+}
 // void dcd_int_handler(uint8_t rhport)
 // {
 //   (void) rhport;
