@@ -123,11 +123,11 @@ mod app {
             let _ = usb_dev.poll(&mut []);
 
             rprintln!(".");
-            for i in 0..1_000_000 {
+            for _ in 0..1_000_000 {
                 asm::nop();
             }
         }
-
+        #[allow(unreachable_code)]
         (Shared {}, Local {}, init::Monotonics())
     }
 }
