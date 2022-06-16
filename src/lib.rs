@@ -105,6 +105,88 @@ impl Usbd {
             xfer_status: [None; MAX_ENDPOINTS],
         })
     }
+
+    fn event_handler(&self, event: Event) {
+        match event.event_type {
+            EventType::Unplugged => {
+                rprintln!("event_handler: unplugged");
+                self.connected.store(false, Ordering::Release);
+                self.addressed.store(false, Ordering::Release);
+                self.cfg_num.store(false, Ordering::Release);
+                self.suspended.store(false, Ordering::Release);
+            }
+
+            EventType::Suspend => {
+                rprintln!("event_handler: suspend");
+                // NOTE: When plugging/unplugging device, the D+/D- state are unstable and
+                // can accidentally meet the SUSPEND condition ( Bus Idle for 3ms ).
+                // In addition, some MCUs such as SAMD or boards that haven no VBUS detection cannot distinguish
+                // suspended vs disconnected. We will skip handling SUSPEND/RESUME event if not currently connected
+                if self.connected.load(Ordering::Acquire) {
+                    self.suspended.store(true, Ordering::Release);
+                    //         osal_queue_send(_usbd_q, event, in_isr);
+                }
+            }
+            EventType::Resume => {
+                rprintln!("event_handler: resume");
+                // skip event if not connected (especially required for SAMD)
+                if self.connected.load(Ordering::Acquire) {
+                    self.suspended.store(false, Ordering::Release);
+                    //         osal_queue_send(_usbd_q, event, in_isr);
+                }
+            }
+            EventType::Sof => {
+                rprintln!("event_handler: sof");
+                // Some MCUs after running dcd_remote_wakeup() does not have way to detect the end of remote wakeup
+                // which last 1-15 ms. DCD can use SOF as a clear indicator that bus is back to operational
+                if self.suspended.load(Ordering::Acquire) {
+                    self.suspended.store(false, Ordering::Release);
+                    //         dcd_event_t const event_resume = { .rhport = event->rhport, .event_id = DCD_EVENT_RESUME };
+                    //         osal_queue_send(_usbd_q, &event_resume, in_isr);
+                }
+            } // default:
+              //       osal_queue_send(_usbd_q, event, in_isr);
+              //     break;
+        }
+    }
+
+    fn get_reg(&self) -> &pac::usbhs::RegisterBlock {
+        // Safety: Usbd owns the USBHS
+        unsafe { &*pac::USBHS::ptr() }
+    }
+
+    fn reset_ep(&self, ep_index: usize) {
+        let usb_hs = self.get_reg();
+        usb_hs.usbhs_devept.modify(|_, w| match ep_index {
+            0 => w.eprst0().set_bit(),
+            1 => w.eprst1().set_bit(),
+            2 => w.eprst2().set_bit(),
+            3 => w.eprst3().set_bit(),
+            4 => w.eprst4().set_bit(),
+            5 => w.eprst5().set_bit(),
+            6 => w.eprst6().set_bit(),
+            7 => w.eprst7().set_bit(),
+            8 => w.eprst8().set_bit(),
+            9 => w.eprst9().set_bit(),
+
+            _ => unreachable!(),
+        });
+
+        usb_hs.usbhs_devept.modify(|_, w| match ep_index {
+            0 => w.eprst0().clear_bit(),
+            1 => w.eprst1().clear_bit(),
+            2 => w.eprst2().clear_bit(),
+            3 => w.eprst3().clear_bit(),
+            4 => w.eprst4().clear_bit(),
+            5 => w.eprst5().clear_bit(),
+            6 => w.eprst6().clear_bit(),
+            7 => w.eprst7().clear_bit(),
+            8 => w.eprst8().clear_bit(),
+            9 => w.eprst9().clear_bit(),
+
+            _ => unreachable!(),
+        });
+    }
 }
 
 impl UsbBus for Usbd {
@@ -117,7 +199,7 @@ impl UsbBus for Usbd {
         interval: u8,
     ) -> Result<EndpointAddress> {
         rprintln!(
-            "alloc_ep: dir {:?}, addr {:?}, type {:?}, max_size {:?}",
+            "usb-device: alloc_ep: dir {:?}, addr {:?}, type {:?}, max_size {:?}",
             ep_dir,
             ep_addr,
             ep_type,
@@ -160,36 +242,19 @@ impl UsbBus for Usbd {
             return Err(UsbError::InvalidEndpoint);
         }
 
-        // Safety: Usbd owns the USBHS
-        let usb_hs = unsafe { &*pac::USBHS::ptr() };
-
         self.xfer_status[ep_index] = Some(XferStatus {
             max_packet_size: ep_max_packet_size,
         });
+
+        // Safety: Usbd owns the USBHS
+        let usb_hs = self.get_reg();
 
         // Per: not sure if the below is needed
         // Note to self: Depends how the actual reset/allocation is done in HW
         // USB_REG->DEVEPT &=~(1 << (DEVEPT_EPRST0_Pos + epnum));
 
         // reset endpoint
-        rprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
-
-        usb_hs.usbhs_devept.modify(|_, w| match ep_index {
-            0 => w.eprst0().set_bit(),
-            1 => w.eprst1().set_bit(),
-            2 => w.eprst2().set_bit(),
-            3 => w.eprst3().set_bit(),
-            4 => w.eprst4().set_bit(),
-            5 => w.eprst5().set_bit(),
-            6 => w.eprst6().set_bit(),
-            7 => w.eprst7().set_bit(),
-            8 => w.eprst8().set_bit(),
-            9 => w.eprst9().set_bit(),
-
-            _ => unreachable!(),
-        });
-
-        rprintln!("reset {:x}", usb_hs.usbhs_devept.read().bits());
+        self.reset_ep(ep_index);
 
         // enable endpoint
         usb_hs.usbhs_devept.modify(|_, w| match ep_index {
@@ -225,11 +290,6 @@ impl UsbBus for Usbd {
             // set bank
             w.epbk()._1_bank();
 
-            // direction,
-            // 0 (OUT): The endpoint direction is OUT.
-            // 1 (IN): The endpoint direction is IN (nor for control endpoints).
-            w.epdir().bit(ep_dir == UsbDirection::In);
-
             // force allocation
             w.alloc().set_bit()
         });
@@ -248,7 +308,12 @@ impl UsbBus for Usbd {
                 // set end point type
                 w.eptype().bits(ep_type as u8);
 
-                // autosw
+                // direction,
+                // 0 (OUT): The endpoint direction is OUT.
+                // 1 (IN): The endpoint direction is IN (nor for control endpoints).
+                w.epdir().bit(ep_dir == UsbDirection::In);
+
+                // autosw, Per: do we really need this if not supporting multiple banks
                 w.autosw().set_bit();
 
                 // set nbtrans
@@ -302,8 +367,10 @@ impl UsbBus for Usbd {
         }
     }
 
+    // Enables and initializes the USB peripheral.
+    // Soon after enabling the device will be reset, so there is no need to perform a USB reset in this method.
     fn enable(&mut self) {
-        rprintln!("enable {:?}", self);
+        rprintln!("usb-device: enable {:?}", self);
 
         // Per: Not sure if this should go here
         // For now we setup the usb device in `init`
@@ -337,20 +404,33 @@ impl UsbBus for Usbd {
         // For now only clear detach here
         // Essentially attaching the device
         // Safety: Usbd owns the USBHS
-        let usb_hs = unsafe { &*pac::USBHS::ptr() };
+        let usb_hs = self.get_reg();
         usb_hs.usbhs_devctrl.modify(|_, w| w.detach().clear_bit());
     }
 
+    // Called when the host resets the device. This will be soon called after poll returns PollResult::Reset.
+    // This method should reset the state of all endpoints and peripheral flags back to a state suitable for enumeration,
+    // as well as ensure that all endpoints previously allocated with alloc_ep are initialized as specified.
     fn reset(&self) {
-        rprintln!("reset {:?}", self);
+        rprintln!("usb-device: reset {:?}", self);
+        // for now just reset the ctrl endpoint
+        // not sure if it should be here, or when EORST is detected
+        self.reset_ep(0);
+        let usb_hs = self.get_reg();
+        rprintln!(
+            "ep0 is enabled? {:?}",
+            usb_hs.usbhs_devept.read().epen0().bit_is_set()
+        );
+
+        // we should
     }
 
     fn set_device_address(&self, addr: u8) {
-        rprintln!("set_device_address {:?}", self);
+        rprintln!("usb-device: set_device_address {:?}", self);
     }
 
     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> Result<usize> {
-        rprintln!("write {:?}", self);
+        rprintln!("usb-device: write {:?}", self);
         rprintln!("ep_addr {:?}", ep_addr);
         rprintln!("buf {:?}", buf);
 
@@ -358,7 +438,7 @@ impl UsbBus for Usbd {
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
-        rprintln!("write {:?}", self);
+        rprintln!("usb-device: write {:?}", self);
         rprintln!("ep_addr {:?}", ep_addr);
         rprintln!("buf {:?}", buf);
 
@@ -366,32 +446,64 @@ impl UsbBus for Usbd {
     }
 
     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
-        rprintln!("set_stalled {:?}, {:?}", self, stalled);
+        rprintln!("usb-device: set_stalled {:?}, {:?}", self, stalled);
         rprintln!("ep_addr {:?}", ep_addr);
     }
 
     fn is_stalled(&self, ep_addr: EndpointAddress) -> bool {
-        rprintln!("is_stalled {:?}", self);
+        rprintln!("usb-device: is_stalled {:?}", self);
         rprintln!("ep_addr {:?}", ep_addr);
         false
     }
 
+    // Causes the USB peripheral to enter USB suspend mode, lowering power consumption and preparing to detect a USB wakeup event.
+    // This will be called after poll returns PollResult::Suspend.
+    // The device will continue be polled, and it shall return a value other than Suspend from poll when it no longer detects the suspend condition.
     fn suspend(&self) {
-        rprintln!("suspend {:?}", self);
+        rprintln!("usb-device: suspend {:?}", self);
     }
 
     fn resume(&self) {
-        rprintln!("resume {:?}", self);
+        rprintln!("usb-device: resume {:?}", self);
     }
 
     fn poll(&self) -> PollResult {
-        rprintln!("poll {:?}", self);
+        rprintln!("usb-device: poll {:?}", self);
 
         // Safety: Usbd owns the USBHS
         let usb_hs = unsafe { &*pac::USBHS::ptr() };
 
         let dev_isr = usb_hs.usbhs_devisr.read();
         rprintln!("dev_irs : {:#010x}", dev_isr.bits());
+
+        if dev_isr.eorst().bit_is_set() {
+            rprintln!("eorst");
+
+            // USB_REG->DEVICR = DEVICR_EORSTC;
+            // USB_REG->DEVICR = DEVICR_WAKEUPC;
+            // USB_REG->DEVICR = DEVICR_SUSPC;
+            // USB_REG->DEVIER = DEVIER_SUSPES;
+
+            // for now just reset the ctrl endpoint
+            self.reset_ep(0);
+
+            // clear the eorst interrupt
+            usb_hs.usbhs_devicr.write(|w| w.eorstc().set_bit());
+
+            // clear the wakeup interrupt
+            usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
+
+            // clear the wakeup interrupt
+            usb_hs.usbhs_devicr.write(|w| w.suspc().set_bit());
+
+            // enable the wakeup interrupt
+            usb_hs.usbhs_devier.write(|w| w.wakeupes().set_bit());
+
+            self.event_handler(Event {
+                event_type: EventType::Suspend,
+            });
+            return PollResult::Reset;
+        }
 
         if dev_isr.eorsm().bit_is_set() {
             rprintln!("eorsm")
@@ -470,6 +582,14 @@ impl UsbBus for Usbd {
         //     }
         //   }
 
+        if usb_hs.usbhs_deveptisr_ctrl_mode()[0]
+            .read()
+            .rxstpi()
+            .bit_is_set()
+        {
+            rprintln!("------------------------------------------------------------ here --------------------------")
+        };
+
         // a bit ugly
         if dev_isr.pep_0().bit_is_set() {
             rprintln!("pep0");
@@ -514,51 +634,6 @@ impl UsbBus for Usbd {
     }
 }
 
-impl Usbd {
-    fn event_handler(&self, event: Event) {
-        match event.event_type {
-            EventType::Unplugged => {
-                rprintln!("event_handler: unplugged");
-                self.connected.store(false, Ordering::Release);
-                self.addressed.store(false, Ordering::Release);
-                self.cfg_num.store(false, Ordering::Release);
-                self.suspended.store(false, Ordering::Release);
-            }
-
-            EventType::Suspend => {
-                rprintln!("event_handler: suspend");
-                // NOTE: When plugging/unplugging device, the D+/D- state are unstable and
-                // can accidentally meet the SUSPEND condition ( Bus Idle for 3ms ).
-                // In addition, some MCUs such as SAMD or boards that haven no VBUS detection cannot distinguish
-                // suspended vs disconnected. We will skip handling SUSPEND/RESUME event if not currently connected
-                if self.connected.load(Ordering::Acquire) {
-                    self.suspended.store(true, Ordering::Release);
-                    //         osal_queue_send(_usbd_q, event, in_isr);
-                }
-            }
-            EventType::Resume => {
-                rprintln!("event_handler: resume");
-                // skip event if not connected (especially required for SAMD)
-                if self.connected.load(Ordering::Acquire) {
-                    self.suspended.store(false, Ordering::Release);
-                    //         osal_queue_send(_usbd_q, event, in_isr);
-                }
-            }
-            EventType::Sof => {
-                rprintln!("event_handler: sof");
-                // Some MCUs after running dcd_remote_wakeup() does not have way to detect the end of remote wakeup
-                // which last 1-15 ms. DCD can use SOF as a clear indicator that bus is back to operational
-                if self.suspended.load(Ordering::Acquire) {
-                    self.suspended.store(false, Ordering::Release);
-                    //         dcd_event_t const event_resume = { .rhport = event->rhport, .event_id = DCD_EVENT_RESUME };
-                    //         osal_queue_send(_usbd_q, &event_resume, in_isr);
-                }
-            } // default:
-              //       osal_queue_send(_usbd_q, event, in_isr);
-              //     break;
-        }
-    }
-}
 // void dcd_int_handler(uint8_t rhport)
 // {
 //   (void) rhport;
