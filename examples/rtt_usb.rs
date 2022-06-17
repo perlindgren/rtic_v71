@@ -123,7 +123,7 @@ mod app {
             let _ = usb_dev.poll(&mut []);
 
             rprintln!(".");
-            for _ in 0..100_000 {
+            for _ in 0..10_000 {
                 asm::nop();
             }
         }
