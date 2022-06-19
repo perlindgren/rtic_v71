@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 
-use core::task::Poll;
+// use core::task::Poll;
 
 use usb_device::{
     bus::{PollResult, UsbBus, UsbBusAllocator},
@@ -9,7 +9,7 @@ use usb_device::{
     Result, UsbDirection, UsbError,
 };
 
-use bare_metal::Mutex;
+// use bare_metal::Mutex;
 // use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,16 +18,6 @@ mod peripheral_identifiers;
 pub use peripheral_identifiers::PeripheralIdentifiers;
 
 use atsamx7x_hal::target_device as pac;
-
-// pub struct UsbPeripheral {
-//     _usbhs: pac::USBHS,
-// }
-
-// impl UsbPeripheral {
-//     pub fn new(usbhs: pac::USBHS) -> Self {
-//         Self { _usbhs: usbhs }
-//     }
-// }
 
 /// USB device implementation.
 #[derive(Debug)]
@@ -553,12 +543,19 @@ impl UsbBus for Usbd {
 
         let ep_index = ep_addr.index();
 
-        for b in buf.iter_mut() {
+        let usb_hs = self.get_reg();
+
+        let sr = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read();
+
+        let count = sr.byct().bits() as usize;
+        rprintln!("count {}", count);
+
+        for b in buf[..count].iter_mut() {
             *b = Usbd::read_fifo(ep_index);
         }
-        panic!("--- read buf {:?}", buf);
+        rprintln!("--- read buf {:x?}", &buf[0..count]);
         // for now assume buf is <= maxsize of ep
-        Ok(buf.len())
+        Ok(count)
     }
 
     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
@@ -695,18 +692,48 @@ impl UsbBus for Usbd {
         if dev_isr.pep_0().bit_is_set() {
             rprintln!("pep0");
 
-            if usb_hs.usbhs_deveptisr_ctrl_mode()[0]
-                .read()
-                .rxstpi()
-                .bit_is_set()
-            {
+            // uint16_t count = (USB_REG->DEVEPTISR[ep_ix] &
+            //     DEVEPTISR_BYCT) >> DEVEPTISR_BYCT_Pos;
+
+            let sr = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read();
+
+            // setup packet?
+            if sr.rxstpi().bit_is_set() {
                 rprintln!("rxstpi");
+                // usb_hs.usbhs_deveptisr_ctrl_mode()[0].write(|w| w.rxstpi.clear_bit());
+
+                let sr = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read();
+
+                let count = sr.byct().bits() as usize;
+                rprintln!("count {}", count);
+
+                let mut buf = &mut [0u8; 64];
+
+                for b in buf[..count].iter_mut() {
+                    *b = Usbd::read_fifo(0);
+                }
+                rprintln!("--- read buf {:x?}", &buf[0..count]);
+
+                // Ack and disable SETUP interrupt
+                //   USB_REG->DEVEPTICR[0] = DEVEPTICR_CTRL_RXSTPIC;
+                //   USB_REG->DEVEPTIDR[0] = DEVEPTIDR_CTRL_RXSTPEC;
+                // Clear RXSTPI interrupt
+                usb_hs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
+                // Disable RXSTPI interrupt
+                usb_hs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.rxstpec().set_bit());
 
                 return PollResult::Data {
                     ep_out: 0,
                     ep_in_complete: 0,
                     ep_setup: 1, // setup occurred at endpoint 0
                 };
+            };
+
+            // out packet
+            if sr.rxouti().bit_is_set() {
+                rprintln!("rxouti");
+
+                todo!();
             };
         }
         if dev_isr.pep_1().bit_is_set() {

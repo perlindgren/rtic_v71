@@ -1,5 +1,5 @@
 //!
-//! //! CDC-ACM serial port example using polling in a busy loop.
+//! > cargo embed --example rtt_usb --release
 //!
 #![no_std]
 #![no_main]
