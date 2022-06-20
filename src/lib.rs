@@ -286,6 +286,33 @@ impl Usbd {
     fn write_fifo(ep_index: usize, data: u8) {
         unsafe { core::ptr::write_volatile(Self::fifo_addr(ep_index) as *mut u8, data) };
     }
+
+    // #[inline(never)]
+    // #[no_mangle]
+    // fn read_buf(ep_index: usize, buf: &mut [u8], len: usize) -> usize {
+    //     let addr = Self::fifo_addr(ep_index);
+    //     for i in 0..len {
+    //         buf[i] = unsafe { core::ptr::read_volatile(Self::addr as *const u8) };
+    //     }
+    //     len
+    // }
+
+    #[inline(never)]
+    #[no_mangle]
+    fn read_buf_raw() -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        const DPRAM: *const u8 = 0xA010_0000 as *const u8;
+
+        buf[0] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[1] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[2] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[3] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[4] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[5] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[6] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf[7] = unsafe { core::ptr::read_volatile(DPRAM) };
+        buf
+    }
 }
 
 impl UsbBus for Usbd {
@@ -504,11 +531,63 @@ impl UsbBus for Usbd {
         //   // Freeze USB clock
         //   USB_REG->CTRL |= CTRL_FRZCLK;
 
-        // For now only clear detach here
-        // Essentially attaching the device
+        // Setup the usb hardware
+
         // Safety: Usbd owns the USBHS
         let usb_hs = self.get_reg();
+
+        // 39.5.2
+        usb_hs.usbhs_ctrl.write(|w| {
+            w.usbe().set_bit(); // enable usb_hs
+            w.uimod().set_bit(); // enable device mode
+            w.vbushwc().set_bit() // must be set?
+        });
+
+        //  wait until clock stable
+        while usb_hs.usbhs_sr.read().clkusable().bit_is_clear() {}
+
+        // // enable high speed
+        // usb_hs.usbhs_devctrl.modify(|_, w| w.spdconf().high_speed());
+
+        // normal mode, both fs and hs available
+        usb_hs.usbhs_devctrl.modify(|_, w| w.spdconf().normal());
+
+        // forced full speed mode
+        // usb_hs.usbhs_devctrl.modify(|_, w| w.spdconf().forced_fs());
+
+        // enable interrupts
+        usb_hs.usbhs_devier.write(|w| {
+            w.eorstes().set_bit();
+            w.suspes().set_bit();
+            w.wakeupes().set_bit();
+            w.sofes().set_bit() // should we use this?
+        });
+
+        // Manually set the Suspend Interrupt
+        // here TinuUsb makes a modify to a read-only reg!
+        usb_hs.usbhs_devifr.write(|w| w.susps().set_bit());
+
+        // Clear/Ack interrupts
+        usb_hs.usbhs_devicr.write(|w| {
+            w.eorstc().set_bit();
+            w.sofc().set_bit();
+            w.wakeupc().set_bit()
+        });
+
+        // check mode, probably not valid unless reset by host
+        rprintln!(
+            "high speed ? {:?}",
+            usb_hs.usbhs_sr.read().speed().is_high_speed()
+        );
+
+        // attach the device
         usb_hs.usbhs_devctrl.modify(|_, w| w.detach().clear_bit());
+
+        // // // freeze the clock
+        // usb_hs.usbhs_ctrl.modify(|_, w| w.frzclk().set_bit());
+
+        // un-freeze the clock, we want it enabled at all times
+        usb_hs.usbhs_ctrl.modify(|_, w| w.frzclk().clear_bit());
     }
 
     // Called when the host resets the device. This will be soon called after poll returns PollResult::Reset.
@@ -555,6 +634,7 @@ impl UsbBus for Usbd {
         }
         rprintln!("--- read buf {:x?}", &buf[0..count]);
         // for now assume buf is <= maxsize of ep
+        panic!("read");
         Ok(count)
     }
 
@@ -586,16 +666,36 @@ impl UsbBus for Usbd {
         // Safety: Usbd owns the USBHS
         let usb_hs = unsafe { &*pac::USBHS::ptr() };
 
+        let dev_ctrl = usb_hs.usbhs_devctrl.read().bits();
+        rprintln!("dev_ctrl {:x}", dev_ctrl);
+        let ctrl = usb_hs.usbhs_ctrl.read().bits();
+        rprintln!("ctrl {:x}", ctrl);
+
         let dev_isr = usb_hs.usbhs_devisr.read();
         rprintln!("dev_irs : {:#010x}", dev_isr.bits());
 
         if dev_isr.eorst().bit_is_set() {
             rprintln!("eorst");
 
+            // un-freeze the clock, we want it enabled at all times
+            //  usb_hs.usbhs_ctrl.modify(|_, w| w.frzclk().clear_bit());
+
             // USB_REG->DEVICR = DEVICR_EORSTC;
             // USB_REG->DEVICR = DEVICR_WAKEUPC;
             // USB_REG->DEVICR = DEVICR_SUSPC;
             // USB_REG->DEVIER = DEVIER_SUSPES;
+
+            // normal mode, both fs and hs available
+            let speed = usb_hs.usbhs_sr.read().speed();
+            rprintln!(
+                "speed {:?}",
+                match speed.bits() {
+                    0 => "full speed",
+                    1 => "high speed",
+                    2 => "low speed",
+                    _ => "reserved",
+                }
+            );
 
             // clear the eorst interrupt
             usb_hs.usbhs_devicr.write(|w| w.eorstc().set_bit());
@@ -701,18 +801,63 @@ impl UsbBus for Usbd {
             if sr.rxstpi().bit_is_set() {
                 rprintln!("rxstpi");
                 // usb_hs.usbhs_deveptisr_ctrl_mode()[0].write(|w| w.rxstpi.clear_bit());
+                // setup packet received
+                rprintln!(
+                    "speed {:?}",
+                    usb_hs.usbhs_devctrl.read().spdconf().is_high_speed()
+                );
 
                 let sr = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read();
 
                 let count = sr.byct().bits() as usize;
-                rprintln!("count {}", count);
+                rprintln!("count ----- {}", count);
 
-                let mut buf = &mut [0u8; 64];
+                // let w0 = unsafe { core::ptr::read_volatile(0xA0100000 as *const u32) };
 
-                for b in buf[..count].iter_mut() {
-                    *b = Usbd::read_fifo(0);
-                }
-                rprintln!("--- read buf {:x?}", &buf[0..count]);
+                // rprintln!(
+                //     "{}",
+                //     usb_hs.usbhs_deveptisr_ctrl_mode()[0]
+                //         .read()
+                //         .rwall()
+                //         .bit_is_set()
+                // );
+
+                // let w1 = unsafe { core::ptr::read_volatile(0xA0100000 as *const u32) };
+
+                // rprintln!(
+                //     "{}",
+                //     usb_hs.usbhs_deveptisr_ctrl_mode()[0]
+                //         .read()
+                //         .rwall()
+                //         .bit_is_set()
+                // );
+
+                // rprintln!("w0 {:#010x}", w0);
+                // rprintln!("w1 {:#010x}", w1);
+
+                // let mut buf = [0u8; 64];
+
+                let buf = Usbd::read_buf_raw();
+                rprintln!("{:?}", buf);
+
+                // buf[0] = Usbd::read_fifo(0);
+                // buf[1] = Usbd::read_fifo(0);
+                // buf[2] = Usbd::read_fifo(0);
+                // buf[3] = Usbd::read_fifo(0);
+                // buf[4] = Usbd::read_fifo(0);
+                // buf[5] = Usbd::read_fifo(0);
+                // buf[6] = Usbd::read_fifo(0);
+                // buf[7] = Usbd::read_fifo(0);
+
+                // rprintln!("--- read buf {:x?}", &buf[0..count]);
+
+                // for b in buf[..count].iter_mut() {
+                //     *b = Usbd::read_fifo(0);
+                //     let count = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read().byct().bits() as usize;
+                //     rprintln!("count {}", count);
+                // }
+
+                // rprintln!("--- read buf {:x?}", &buf[0..count]);
 
                 // Ack and disable SETUP interrupt
                 //   USB_REG->DEVEPTICR[0] = DEVEPTICR_CTRL_RXSTPIC;
@@ -735,6 +880,7 @@ impl UsbBus for Usbd {
 
                 todo!();
             };
+            panic!("should receive setup packet")
         }
         if dev_isr.pep_1().bit_is_set() {
             rprintln!("pep1");
