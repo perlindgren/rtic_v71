@@ -36,6 +36,7 @@ pub struct Usbd {
     addressed: AtomicBool,
     cfg_num: AtomicBool,
     suspended: AtomicBool,
+    ep0_transfer_complete: AtomicBool,
     xfer_status: [Option<XferStatus>; MAX_ENDPOINTS],
 }
 
@@ -90,6 +91,7 @@ impl Usbd {
             // busy_in_endpoints: Mutex::new(Cell::new(0)),
             connected: AtomicBool::new(false),
             addressed: AtomicBool::new(false),
+            ep0_transfer_complete: AtomicBool::new(false),
             cfg_num: AtomicBool::new(false),
             suspended: AtomicBool::new(false),
             xfer_status: [None; MAX_ENDPOINTS],
@@ -275,59 +277,21 @@ impl Usbd {
         DPRAM + ep_index * 0x8000
     }
 
-    // read endpoint fifo
-    #[inline(always)]
-    fn read_fifo(ep_index: usize) -> u8 {
-        unsafe { core::ptr::read_volatile(Self::fifo_addr(ep_index) as *const u8) }
-    }
-
     // write endpoint fifo
     #[inline(always)]
-    fn write_fifo(ep_index: usize, data: u8) {
-        unsafe { core::ptr::write_volatile(Self::fifo_addr(ep_index) as *mut u8, data) };
-    }
-
-    // #[inline(never)]
-    // #[no_mangle]
-    // fn read_buf(ep_index: usize, buf: &mut [u8], len: usize) -> usize {
-    //     let addr = Self::fifo_addr(ep_index);
-    //     for i in 0..len {
-    //         buf[i] = unsafe { core::ptr::read_volatile(Self::addr as *const u8) };
-    //     }
-    //     len
-    // }
-
-    #[inline(never)]
-    #[no_mangle]
-    fn read_buf_raw() -> [u8; 8] {
-        let mut buf = [0u8; 8];
-        const DPRAM: *const u8 = 0xA010_0000 as *const u8;
-
-        buf[0] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[1] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[2] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[3] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[4] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[5] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[6] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf[7] = unsafe { core::ptr::read_volatile(DPRAM) };
-        buf
-    }
-
-    #[inline(never)]
-    #[no_mangle]
-    fn read_buf_copy() -> [u8; 8] {
-        let mut buf = [0u8; 8];
-        const DPRAM: *const u8 = 0xA010_0000 as *const u8;
-
+    fn write_fifo(ep_index: usize, buf: &[u8]) {
         unsafe {
-            core::ptr::copy_nonoverlapping(DPRAM, &mut buf as *mut u8, 8);
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr() as *const u8,
+                Self::fifo_addr(ep_index) as *mut u8,
+                buf.len(),
+            );
         }
-        buf
     }
 
+    // read endpoint fifo
     #[inline(always)]
-    fn read_fifo_buf(ep_index: usize, buf: &mut [u8]) {
+    fn read_fifo(ep_index: usize, buf: &mut [u8]) {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 Self::fifo_addr(ep_index) as *const u8,
@@ -339,6 +303,9 @@ impl Usbd {
 }
 
 impl UsbBus for Usbd {
+    // Allocates an endpoint and specified endpoint parameters.
+    // This method is called by the device and class implementations to allocate endpoints,
+    // and can only be called before enable is called.
     fn alloc_ep(
         &mut self,
         ep_dir: UsbDirection,
@@ -523,7 +490,7 @@ impl UsbBus for Usbd {
     // Enables and initializes the USB peripheral.
     // Soon after enabling the device will be reset, so there is no need to perform a USB reset in this method.
     fn enable(&mut self) {
-        rprintln!("usb-device: enable {:?}", self);
+        rprintln!("usb-device: enable");
 
         // Per: Not sure if this should go here
         // For now we setup the usb device in `init`
@@ -609,7 +576,7 @@ impl UsbBus for Usbd {
         // // // freeze the clock
         // usb_hs.usbhs_ctrl.modify(|_, w| w.frzclk().set_bit());
 
-        // un-freeze the clock, we want it enabled at all times
+        // un-freeze the clock, we want it enabled at all tvimes
         usb_hs.usbhs_ctrl.modify(|_, w| w.frzclk().clear_bit());
     }
 
@@ -617,59 +584,60 @@ impl UsbBus for Usbd {
     // This method should reset the state of all endpoints and peripheral flags back to a state suitable for enumeration,
     // as well as ensure that all endpoints previously allocated with alloc_ep are initialized as specified.
     fn reset(&self) {
-        rprintln!("usb-device: reset {:?}", self);
+        rprintln!("usb-device: reset");
 
         // open control endpoint
         self.open_ep(0);
     }
 
     fn set_device_address(&self, addr: u8) {
-        rprintln!("usb-device: set_device_address {:?}", self);
+        rprintln!("usb-device: set_device_address");
         todo!()
     }
 
     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> Result<usize> {
-        rprintln!("usb-device: write {:?}", self);
+        rprintln!("usb-device: write");
         rprintln!("ep_addr {:?}", ep_addr);
-        rprintln!("buf {:?}", buf);
+        rprintln!("buf {:02x?}", buf);
+        rprintln!("buf.len {:?}", buf.len());
 
-        panic!("write");
+        let ep_index = ep_addr.index();
+        rprintln!("ep_index {}", ep_index);
+        Usbd::write_fifo(ep_index, buf);
 
-        Err(UsbError::Unsupported)
+        Ok(buf.len())
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
-        rprintln!("usb-device: read {:?}", self);
+        rprintln!("usb-device: read");
         rprintln!("ep_addr {:?}", ep_addr);
-        rprintln!("buf {:?}", buf);
+        rprintln!("buf.len {:?}", buf.len());
 
         let ep_index = ep_addr.index();
 
         let usb_hs = self.get_reg();
 
         let sr = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read();
-
         let count = sr.byct().bits() as usize;
-        rprintln!("count {}", count);
+        rprintln!("--- read count {}", count);
 
-        Usbd::read_fifo_buf(ep_addr.index(), &mut buf[0..count]);
+        Usbd::read_fifo(ep_index, &mut buf[0..count]);
 
-        // for b in buf[..count].iter_mut() {
-        //     *b = Usbd::read_fifo(ep_index);
-        // }
         rprintln!("--- read buf {:x?}", &buf[0..count]);
-        // for now assume buf is <= maxsize of ep
-        // panic!("read");
+
+        // Clear RXSTPI interrupt
+        usb_hs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
+
         Ok(count)
     }
 
     fn set_stalled(&self, ep_addr: EndpointAddress, stalled: bool) {
-        rprintln!("usb-device: set_stalled {:?}, {:?}", self, stalled);
+        rprintln!("usb-device: set_stalled {:?}", stalled);
         rprintln!("ep_addr {:?}", ep_addr);
     }
 
     fn is_stalled(&self, ep_addr: EndpointAddress) -> bool {
-        rprintln!("usb-device: is_stalled {:?}", self);
+        rprintln!("usb-device: is_stalled");
         rprintln!("ep_addr {:?}", ep_addr);
         false
     }
@@ -678,15 +646,19 @@ impl UsbBus for Usbd {
     // This will be called after poll returns PollResult::Suspend.
     // The device will continue be polled, and it shall return a value other than Suspend from poll when it no longer detects the suspend condition.
     fn suspend(&self) {
-        rprintln!("usb-device: suspend {:?}", self);
+        rprintln!("usb-device: suspend");
     }
 
     fn resume(&self) {
-        rprintln!("usb-device: resume {:?}", self);
+        rprintln!("usb-device: resume");
     }
 
+    // Gets information about events and incoming data.
+    // Usually called in a loop or from an interrupt handler.
+    // See the PollResult struct for more information.
+
     fn poll(&self) -> PollResult {
-        rprintln!("usb-device: poll {:?}", self);
+        rprintln!("usb-device: poll");
 
         // Safety: Usbd owns the USBHS
         let usb_hs = unsafe { &*pac::USBHS::ptr() };
@@ -700,6 +672,8 @@ impl UsbBus for Usbd {
         rprintln!("dev_irs : {:#010x}", dev_isr.bits());
 
         if dev_isr.eorst().bit_is_set() {
+            // EORST - End of Reset
+
             rprintln!("eorst");
 
             // un-freeze the clock, we want it enabled at all times
@@ -725,84 +699,86 @@ impl UsbBus for Usbd {
             // clear the eorst interrupt
             usb_hs.usbhs_devicr.write(|w| w.eorstc().set_bit());
 
-            // clear the wakeup interrupt
-            usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
+            // // clear the wakeup interrupt
+            // usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
 
-            // clear the wakeup interrupt
-            usb_hs.usbhs_devicr.write(|w| w.suspc().set_bit());
+            // // clear the susp interrupt
+            // usb_hs.usbhs_devicr.write(|w| w.suspc().set_bit());
 
-            // enable the wakeup interrupt
-            usb_hs.usbhs_devier.write(|w| w.wakeupes().set_bit());
+            // // enable the wakeup interrupt
+            // usb_hs.usbhs_devier.write(|w| w.wakeupes().set_bit());
 
-            self.event_handler(Event {
-                event_type: EventType::Suspend,
-            });
+            // self.event_handler(Event {
+            //     event_type: EventType::Suspend,
+            // });
             return PollResult::Reset;
         }
 
-        if dev_isr.eorsm().bit_is_set() {
-            rprintln!("eorsm")
-        }
+        // if dev_isr.eorsm().bit_is_set() {
+        //     rprintln!("eorsm")
+        // }
 
-        if dev_isr.msof().bit_is_set() {
-            rprintln!("msof")
-        }
+        // if dev_isr.msof().bit_is_set() {
+        //     rprintln!("msof")
+        // }
 
-        if dev_isr.sof().bit_is_set() {
-            rprintln!("sof")
-        }
+        // if dev_isr.sof().bit_is_set() {
+        //     rprintln!("sof")
+        // }
 
-        if dev_isr.susp().bit_is_set() {
-            rprintln!("susp");
-            // Unfreeze USB clock
-            // USB_REG->CTRL &= ~CTRL_FRZCLK;
-            // while (!(USB_REG->SR & SR_CLKUSABLE));
-            // USB_REG->DEVICR = DEVICR_SUSPC;
-            // USB_REG->DEVIDR = DEVIDR_SUSPEC;
-            // USB_REG->DEVIER = DEVIER_WAKEUPES;
-            // USB_REG->CTRL |= CTRL_FRZCLK;
+        // if dev_isr.susp().bit_is_set() {
+        //     rprintln!("susp");
+        //     // Unfreeze USB clock
+        //     // USB_REG->CTRL &= ~CTRL_FRZCLK;
+        //     // while (!(USB_REG->SR & SR_CLKUSABLE));
+        //     // USB_REG->DEVICR = DEVICR_SUSPC;
+        //     // USB_REG->DEVIDR = DEVIDR_SUSPEC;
+        //     // USB_REG->DEVIER = DEVIER_WAKEUPES;
+        //     // USB_REG->CTRL |= CTRL_FRZCLK;
 
-            // dcd_event_bus_signal(0, DCD_EVENT_SUSPEND, true);
+        //     // dcd_event_bus_signal(0, DCD_EVENT_SUSPEND, true);
 
-            // Per: for now we let the usb be clocked, just handle the HW events
-            // clear the susp interrupt
-            usb_hs.usbhs_devicr.write(|w| w.suspc().set_bit());
-            // disable the susp interrupt
-            usb_hs.usbhs_devidr.write(|w| w.suspec().set_bit());
-            // enable the wakeup interrupt
-            usb_hs.usbhs_devier.write(|w| w.wakeupes().set_bit());
-            self.event_handler(Event {
-                event_type: EventType::Suspend,
-            });
-        }
+        //     // Per: for now we let the usb be clocked, just handle the HW events
+        //     // clear the susp interrupt
+        //     usb_hs.usbhs_devicr.write(|w| w.suspc().set_bit());
+        //     // disable the susp interrupt
+        //     usb_hs.usbhs_devidr.write(|w| w.suspec().set_bit());
+        //     // enable the wakeup interrupt
+        //     usb_hs.usbhs_devier.write(|w| w.wakeupes().set_bit());
+        //     self.event_handler(Event {
+        //         event_type: EventType::Suspend,
+        //     });
+        //     return PollResult::Suspend;
+        // }
 
-        if dev_isr.uprsm().bit_is_set() {
-            rprintln!("uprsm")
-        }
+        // if dev_isr.uprsm().bit_is_set() {
+        //     rprintln!("uprsm")
+        // }
 
-        if dev_isr.wakeup().bit_is_set() {
-            rprintln!("wakeup");
-            // USB_REG->DEVICR = DEVICR_WAKEUPC;
-            // USB_REG->DEVIDR = DEVIDR_WAKEUPEC;
-            // USB_REG->DEVIER = DEVIER_SUSPES;
+        // if dev_isr.wakeup().bit_is_set() {
+        //     rprintln!("wakeup");
+        //     // USB_REG->DEVICR = DEVICR_WAKEUPC;
+        //     // USB_REG->DEVIDR = DEVIDR_WAKEUPEC;
+        //     // USB_REG->DEVIER = DEVIER_SUSPES;
 
-            // dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
+        //     // dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
 
-            // clear the wakeup interrupt
-            usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
-            // disable wakeup the interrupt
-            usb_hs.usbhs_devidr.write(|w| w.wakeupec().set_bit());
-            // enable the susp interrupt
-            usb_hs.usbhs_devier.write(|w| w.suspes().set_bit());
-            // event
+        //     // clear the wakeup interrupt
+        //     usb_hs.usbhs_devicr.write(|w| w.wakeupc().set_bit());
+        //     // disable wakeup the interrupt
+        //     usb_hs.usbhs_devidr.write(|w| w.wakeupec().set_bit());
+        //     // enable the susp interrupt
+        //     usb_hs.usbhs_devier.write(|w| w.suspes().set_bit());
+        //     // event
 
-            // dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
-            // dcd_event_t event = { .rhport = rhport, .event_id = eid };
-            // dcd_event_handler(&event, in_isr);
-            self.event_handler(Event {
-                event_type: EventType::Resume,
-            })
-        }
+        //     // dcd_event_bus_signal(0, DCD_EVENT_RESUME, true);
+        //     // dcd_event_t event = { .rhport = rhport, .event_id = eid };
+        //     // dcd_event_handler(&event, in_isr);
+        //     self.event_handler(Event {
+        //         event_type: EventType::Resume,
+        //     });
+        //     return PollResult::Resume;
+        // }
 
         // Endpoints interrupt
         //   for (int ep_ix = 0; ep_ix < EP_MAX; ep_ix++)
@@ -825,73 +801,13 @@ impl UsbBus for Usbd {
             // setup packet?
             if sr.rxstpi().bit_is_set() {
                 rprintln!("rxstpi");
-                // usb_hs.usbhs_deveptisr_ctrl_mode()[0].write(|w| w.rxstpi.clear_bit());
                 // setup packet received
-                rprintln!(
-                    "speed {:?}",
-                    usb_hs.usbhs_devctrl.read().spdconf().is_high_speed()
-                );
-
                 let sr = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read();
-
                 let count = sr.byct().bits() as usize;
-                rprintln!("count ----- {}", count);
+                rprintln!("count {}", count);
 
-                // let w0 = unsafe { core::ptr::read_volatile(0xA0100000 as *const u32) };
-
-                // rprintln!(
-                //     "{}",
-                //     usb_hs.usbhs_deveptisr_ctrl_mode()[0]
-                //         .read()
-                //         .rwall()
-                //         .bit_is_set()
-                // );
-
-                // let w1 = unsafe { core::ptr::read_volatile(0xA0100000 as *const u32) };
-
-                // rprintln!(
-                //     "{}",
-                //     usb_hs.usbhs_deveptisr_ctrl_mode()[0]
-                //         .read()
-                //         .rwall()
-                //         .bit_is_set()
-                // );
-
-                // rprintln!("w0 {:#010x}", w0);
-                // rprintln!("w1 {:#010x}", w1);
-
-                // let mut buf = [0u8; 64];
-
-                // let buf = Usbd::read_buf_raw();
-                let buf = Usbd::read_buf_copy();
-                rprintln!("{:02x?}", buf);
-
-                // buf[0] = Usbd::read_fifo(0);
-                // buf[1] = Usbd::read_fifo(0);
-                // buf[2] = Usbd::read_fifo(0);
-                // buf[3] = Usbd::read_fifo(0);
-                // buf[4] = Usbd::read_fifo(0);
-                // buf[5] = Usbd::read_fifo(0);
-                // buf[6] = Usbd::read_fifo(0);
-                // buf[7] = Usbd::read_fifo(0);
-
-                // rprintln!("--- read buf {:x?}", &buf[0..count]);
-
-                // for b in buf[..count].iter_mut() {
-                //     *b = Usbd::read_fifo(0);
-                //     let count = usb_hs.usbhs_deveptisr_ctrl_mode()[0].read().byct().bits() as usize;
-                //     rprintln!("count {}", count);
-                // }
-
-                // rprintln!("--- read buf {:x?}", &buf[0..count]);
-
-                // Ack and disable SETUP interrupt
-                //   USB_REG->DEVEPTICR[0] = DEVEPTICR_CTRL_RXSTPIC;
-                //   USB_REG->DEVEPTIDR[0] = DEVEPTIDR_CTRL_RXSTPEC;
-                // Clear RXSTPI interrupt
-                usb_hs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
-                // Disable RXSTPI interrupt
-                usb_hs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.rxstpec().set_bit());
+                // Disable RXSTPI interrupt?
+                // usb_hs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.rxstpec().set_bit());
 
                 return PollResult::Data {
                     ep_out: 0,
@@ -908,33 +824,33 @@ impl UsbBus for Usbd {
             };
             panic!("should receive setup packet")
         }
-        if dev_isr.pep_1().bit_is_set() {
-            rprintln!("pep1");
-        }
-        if dev_isr.pep_2().bit_is_set() {
-            rprintln!("pep2");
-        }
-        if dev_isr.pep_3().bit_is_set() {
-            rprintln!("pep3");
-        }
-        if dev_isr.pep_4().bit_is_set() {
-            rprintln!("pep4");
-        }
-        if dev_isr.pep_5().bit_is_set() {
-            rprintln!("pep5");
-        }
-        if dev_isr.pep_6().bit_is_set() {
-            rprintln!("pep6");
-        }
-        if dev_isr.pep_7().bit_is_set() {
-            rprintln!("pep7");
-        }
-        if dev_isr.pep_8().bit_is_set() {
-            rprintln!("pep8");
-        }
-        if dev_isr.pep_9().bit_is_set() {
-            rprintln!("pep9");
-        }
+        // if dev_isr.pep_1().bit_is_set() {
+        //     rprintln!("pep1");
+        // }
+        // if dev_isr.pep_2().bit_is_set() {
+        //     rprintln!("pep2");
+        // }
+        // if dev_isr.pep_3().bit_is_set() {
+        //     rprintln!("pep3");
+        // }
+        // if dev_isr.pep_4().bit_is_set() {
+        //     rprintln!("pep4");
+        // }
+        // if dev_isr.pep_5().bit_is_set() {
+        //     rprintln!("pep5");
+        // }
+        // if dev_isr.pep_6().bit_is_set() {
+        //     rprintln!("pep6");
+        // }
+        // if dev_isr.pep_7().bit_is_set() {
+        //     rprintln!("pep7");
+        // }
+        // if dev_isr.pep_8().bit_is_set() {
+        //     rprintln!("pep8");
+        // }
+        // if dev_isr.pep_9().bit_is_set() {
+        //     rprintln!("pep9");
+        // }
 
         //USB_REG->DEVISR;
 

@@ -123,6 +123,8 @@ mod app {
 
         rprintln!("rtic: usb device initialized");
         loop {
+            rprintln!("rtic: poll");
+
             let _ = usb_dev.poll(&mut []);
 
             rprintln!("rtic: wait");
