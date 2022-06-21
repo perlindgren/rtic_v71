@@ -80,6 +80,7 @@
         "mult",
         "multidrive",
         "nbtrans",
+        "nonoverlapping",
         "openocd",
         "pcer",
         "pckrdy",

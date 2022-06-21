@@ -313,6 +313,29 @@ impl Usbd {
         buf[7] = unsafe { core::ptr::read_volatile(DPRAM) };
         buf
     }
+
+    #[inline(never)]
+    #[no_mangle]
+    fn read_buf_copy() -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        const DPRAM: *const u8 = 0xA010_0000 as *const u8;
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(DPRAM, &mut buf as *mut u8, 8);
+        }
+        buf
+    }
+
+    #[inline(always)]
+    fn read_fifo_buf(ep_index: usize, buf: &mut [u8]) {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                Self::fifo_addr(ep_index) as *const u8,
+                buf.as_mut_ptr() as *mut u8,
+                buf.len(),
+            );
+        }
+    }
 }
 
 impl UsbBus for Usbd {
@@ -616,7 +639,7 @@ impl UsbBus for Usbd {
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> Result<usize> {
-        rprintln!("usb-device: write {:?}", self);
+        rprintln!("usb-device: read {:?}", self);
         rprintln!("ep_addr {:?}", ep_addr);
         rprintln!("buf {:?}", buf);
 
@@ -629,12 +652,14 @@ impl UsbBus for Usbd {
         let count = sr.byct().bits() as usize;
         rprintln!("count {}", count);
 
-        for b in buf[..count].iter_mut() {
-            *b = Usbd::read_fifo(ep_index);
-        }
+        Usbd::read_fifo_buf(ep_addr.index(), &mut buf[0..count]);
+
+        // for b in buf[..count].iter_mut() {
+        //     *b = Usbd::read_fifo(ep_index);
+        // }
         rprintln!("--- read buf {:x?}", &buf[0..count]);
         // for now assume buf is <= maxsize of ep
-        panic!("read");
+        // panic!("read");
         Ok(count)
     }
 
@@ -837,8 +862,9 @@ impl UsbBus for Usbd {
 
                 // let mut buf = [0u8; 64];
 
-                let buf = Usbd::read_buf_raw();
-                rprintln!("{:?}", buf);
+                // let buf = Usbd::read_buf_raw();
+                let buf = Usbd::read_buf_copy();
+                rprintln!("{:02x?}", buf);
 
                 // buf[0] = Usbd::read_fifo(0);
                 // buf[1] = Usbd::read_fifo(0);
