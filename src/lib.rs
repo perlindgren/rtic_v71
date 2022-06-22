@@ -605,6 +605,15 @@ impl UsbBus for Usbd {
         rprintln!("ep_index {}", ep_index);
         Usbd::write_fifo(ep_index, buf);
 
+        let usb_hs = self.get_reg();
+
+        // clear TXINI to send the package
+        usb_hs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
+        // enable TXINI interrupt
+        usb_hs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.txines().set_bit());
+        // enable RXOUTI interrupt
+        usb_hs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.rxoutes().set_bit());
+
         Ok(buf.len())
     }
 
@@ -625,7 +634,7 @@ impl UsbBus for Usbd {
 
         rprintln!("--- read buf {:x?}", &buf[0..count]);
 
-        // Clear RXSTPI interrupt
+        // Clear RXSTPI interrupt, and make FIFO available
         usb_hs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
 
         Ok(count)
@@ -816,12 +825,25 @@ impl UsbBus for Usbd {
                 };
             };
 
-            // out packet
+            // out packet done
             if sr.rxouti().bit_is_set() {
                 rprintln!("rxouti");
+                // could be that we should read the out packet to confirm
+
+                return PollResult::Data {
+                    ep_out: 0,
+                    ep_in_complete: 1,
+                    ep_setup: 0, // setup occurred at endpoint 0
+                };
+            };
+
+            // in packet done
+            if sr.txini().bit_is_set() {
+                rprintln!("txini");
 
                 todo!();
             };
+
             panic!("should receive setup packet")
         }
         // if dev_isr.pep_1().bit_is_set() {
