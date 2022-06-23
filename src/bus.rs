@@ -14,11 +14,15 @@ use core::marker::PhantomData;
 use core::mem;
 use cortex_m::interrupt::{self, Mutex};
 use cortex_m::singleton;
-use usb_device::bus::PollResult;
+use usb_device::bus::{PollResult, UsbBusAllocator};
 use usb_device::endpoint::{EndpointAddress, EndpointType};
 use usb_device::{Result as UsbResult, UsbDirection, UsbError};
 
 use rtt_target::rprintln;
+
+pub fn usb_allocator(usb: pac::USBHS) -> UsbBusAllocator<UsbBus> {
+    UsbBusAllocator::new(UsbBus::new(usb))
+}
 
 /// EPConfig tracks the desired configuration for one side of an endpoint.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,7 +86,7 @@ impl Endpoints {
         max_packet_size: u16,
         _interval: u8,
     ) -> UsbResult<EndpointAddress> {
-        if self.ep_config[idx] != None {
+        if idx != 0 && self.ep_config[idx] != None {
             return Err(UsbError::EndpointOverflow);
         }
 

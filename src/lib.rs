@@ -5,7 +5,7 @@
 pub use usb_device;
 
 mod bus;
-use self::bus::UsbBus;
+pub use self::bus::{usb_allocator, UsbBus};
 
 mod devicedesc;
-use self::devicedesc::Descriptors;
+use devicedesc::Descriptors;
