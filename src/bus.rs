@@ -529,6 +529,86 @@ impl Inner {
 // }
 
 impl Inner {
+    fn open_endpoint(&self, ep_index: usize) {
+        let usbhs = self.usbhs();
+        match self.endpoints.ep_config[ep_index] {
+            Some(ep_config) => {
+                // generic configuration
+                usbhs.usbhs_deveptcfg[ep_index].write(|w| {
+                    match ep_config.max_packet_size {
+                        0..=8 => w.epsize()._8_byte(),
+                        9..=16 => w.epsize()._16_byte(),
+                        17..=32 => w.epsize()._32_byte(),
+                        33..=64 => w.epsize()._64_byte(),
+                        65..=128 => w.epsize()._128_byte(),
+                        129..=256 => w.epsize()._256_byte(),
+                        257..=512 => w.epsize()._512_byte(),
+                        513..=1024 => w.epsize()._1024_byte(),
+                        _ => unreachable!(),
+                    };
+                    // set bank
+                    w.epbk()._1_bank();
+
+                    // set end point type
+                    w.eptype().bits(ep_config.ep_type as u8);
+
+                    // force allocation
+                    w.alloc().set_bit()
+                });
+
+                if ep_index == 0 {
+                    rprintln!("ep {} - set ctrl", ep_index);
+                    // ep0 used as ctrl endpoint
+                    // Configure the Endpoint 0 configuration register
+                    usbhs.usbhs_deveptcfg[0].modify(|_, w| {
+                        // setup RSTDTS
+                        usbhs.usbhs_deveptier_ctrl_mode()[ep_index].write(|w| w.rstdts().set_bit());
+                        // setup STALLRQC
+                        usbhs.usbhs_deveptidr_ctrl_mode()[ep_index]
+                            .write(|w| w.stallrqc().set_bit());
+
+                        w
+                    });
+
+                    // check that endpoint was correctly initiated
+                    // Notice, re-allocation might fail in case size is larger, so be aware
+                    if usbhs.usbhs_deveptisr_ctrl_mode()[ep_index]
+                        .read()
+                        .cfgok()
+                        .bit_is_set()
+                    {
+                        // Endpoint configuration is successful
+                        usbhs.usbhs_deveptier_ctrl_mode()[ep_index]
+                            .write(|w| w.rxstpes().set_bit());
+                        // Enable Endpoint Interrupt
+                        self.enable_endpoint_interrupt(ep_index);
+                    } else {
+                        todo!();
+                        // rprintln!("ep {} - set {:?}", ep_index, ep_config.ep_type);
+                        // usbhs.usbhs_deveptcfg[ep_index].modify(|_, w| {
+                        //     // direction,
+                        //     // 0 (OUT): The endpoint direction is OUT.
+                        //     // 1 (IN): The endpoint direction is IN (nor for control endpoints).
+                        //     w.epdir().bit(ep_config.ep_dir == UsbDirection::In);
+
+                        //     // autosw, Per: do we really need this if not supporting multiple banks
+                        //     w.autosw().set_bit();
+
+                        //     // set nbtrans
+                        //     if ep_config.ep_type == EndpointType::Isochronous {
+                        //         w.nbtrans()._1_trans();
+                        //         todo!()
+                        //     }
+
+                        //     w
+                        // });
+                    };
+                }
+            }
+            None => {}
+        }
+    }
+
     fn enable(&mut self) {
         // Per: Comments
         // - x5 sets device descriptors in HW
@@ -689,6 +769,7 @@ impl Inner {
 
     // Called when a USB Reset is detected
     fn reset(&self) {
+        rprintln!("inner:reset");
         let usbhs = self.usbhs();
         // assume USB endpoints already configured by `enable`
         // we don't need to reset ep0, done by HW
@@ -717,6 +798,8 @@ impl Inner {
             w.eprst8().clear_bit();
             w.eprst9().clear_bit()
         });
+
+        self.open_endpoint(0);
     }
     //     /// Enables/disables the Start Of Frame (SOF) interrupt
     //     fn sof_interrupt(&self, enable: bool) {
