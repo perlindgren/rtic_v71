@@ -8,12 +8,8 @@ use super::Descriptors;
 
 use atsamx7x_hal::target_device as pac;
 
-use crate::devicedesc::DeviceDescBank;
 use core::cell::UnsafeCell;
-use core::marker::PhantomData;
-use core::mem;
 use cortex_m::interrupt::{self, Mutex};
-use cortex_m::singleton;
 use usb_device::bus::{PollResult, UsbBusAllocator};
 use usb_device::endpoint::{EndpointAddress, EndpointType};
 use usb_device::{Result as UsbResult, UsbDirection, UsbError};
@@ -97,7 +93,6 @@ impl Endpoints {
 }
 
 struct Inner {
-    desc: Descriptors,
     endpoints: Endpoints,
 }
 
@@ -106,20 +101,8 @@ pub struct UsbBus {
 }
 
 impl UsbBus {
-    pub fn new(
-        // _clock: &clock::UsbClock,
-        // mclk: &mut MCLK,
-        // dm_pad: impl AnyPin<Id = PA24>,
-        // dp_pad: impl AnyPin<Id = PA25>,
-        _usb: pac::USBHS,
-    ) -> Self {
-        // mclk.ahbmask.modify(|_, w| w.usb_().set_bit());
-        // mclk.apbbmask.modify(|_, w| w.usb_().set_bit());
-
+    pub fn new(_usb: pac::USBHS) -> Self {
         let inner = Inner {
-            // _dm_pad: dm_pad.into().into_mode::<AlternateH>(),
-            // _dp_pad: dp_pad.into().into_mode::<AlternateH>(),
-            desc: Descriptors::new(),
             endpoints: Endpoints::new(),
         };
 
@@ -201,338 +184,18 @@ impl Inner {
             );
         }
     }
-
-    //     fn set_stall<EP: Into<EndpointAddress>>(&self, ep: EP, stall: bool) {
-    //         let ep = ep.into();
-    //         if ep.is_out() {
-    //             if let Ok(mut bank) = self.bank0(ep) {
-    //                 bank.set_stall(stall);
-    //             }
-    //         } else if let Ok(mut bank) = self.bank1(ep) {
-    //             bank.set_stall(stall);
-    //         }
-    //     }
 }
-
-// #[derive(Copy, Clone)]
-// enum FlushConfigMode {
-//     // Write configuration to all configured endpoints.
-//     Full,
-//     // Refresh configuration which was reset due to a bus reset.
-//     ProtocolReset,
-// }
-
-// /// Generate a method that allows returning the endpoint register
-// /// for a given endpoint index.  This helps very slightly with
-// /// two inconvenient issues:
-// /// - the SVD file translation generates a sequence of elements like ecfg0,
-// ///   efcg1 rather than an array, so we have to manually translate the indices
-// /// - rust doesn't currently have a great solution for generating identifier
-// ///   names, so we have to pass in a list of the possible names.
-// macro_rules! ep {
-//     ($name:ident, $type:ident) => {
-//         #[allow(unused)]
-//         #[inline]
-//         fn $name(&self, endpoint: usize) -> &pac::usb::device::device_endpoint::$type {
-//             match endpoint {
-//                 0 => &self.usb().device_endpoint0.$name,
-//                 1 => &self.usb().device_endpoint1.$name,
-//                 2 => &self.usb().device_endpoint2.$name,
-//                 3 => &self.usb().device_endpoint3.$name,
-//                 4 => &self.usb().device_endpoint4.$name,
-//                 5 => &self.usb().device_endpoint5.$name,
-//                 6 => &self.usb().device_endpoint6.$name,
-//                 7 => &self.usb().device_endpoint7.$name,
-//                 _ => unreachable!(),
-//             }
-//         }
-//     };
-// }
-
-// struct Bank<'a, T> {
-//     address: EndpointAddress,
-//     usb: &'a DEVICE,
-//     desc: RefMut<'a, super::Descriptors>,
-//     _phantom: PhantomData<T>,
-//     endpoints: Ref<'a, AllEndpoints>,
-// }
-
-// impl<'a, T> Bank<'a, T> {
-//     fn usb(&self) -> &DEVICE {
-//         self.usb
-//     }
-
-//     #[inline]
-//     fn index(&self) -> usize {
-//         self.address.index()
-//     }
-
-//     #[inline]
-//     fn config(&mut self) -> &EPConfig {
-//         let ep = &self.endpoints.endpoints[self.address.index()];
-//         if self.address.is_out() {
-//             &ep.bank0
-//         } else {
-//             &ep.bank1
-//         }
-//     }
-// }
-
-// /// InBank represents In direction banks, Bank #1
-// struct InBank;
-
-// /// OutBank represents Out direction banks, Bank #0
-// struct OutBank;
-
-// impl<'a> Bank<'a, InBank> {
-//     fn desc_bank(&mut self) -> &mut DeviceDescBank {
-//         let idx = self.index();
-//         self.desc.bank(idx, 1)
-//     }
-
-//     /// Returns true if Bank 1 is Ready and thus has data that can be written
-//     #[inline]
-//     fn is_ready(&self) -> bool {
-//         self.epstatus(self.index()).read().bk1rdy().bit()
-//     }
-
-//     /// Set Bank 1 Ready.
-//     /// Ready means that the buffer contains data that can be sent.
-//     #[inline]
-//     fn set_ready(&self, ready: bool) {
-//         if ready {
-//             self.epstatusset(self.index())
-//                 .write(|w| w.bk1rdy().set_bit());
-//         } else {
-//             self.epstatusclr(self.index())
-//                 .write(|w| w.bk1rdy().set_bit());
-//         }
-//     }
-
-//     /// Acknowledges the signal that the last packet was sent.
-//     #[inline]
-//     fn clear_transfer_complete(&self) {
-//         // Clear bits in epintflag by writing them to 1
-//         self.epintflag(self.index())
-//             .write(|w| w.trcpt1().set_bit().trfail1().set_bit());
-//     }
-
-//     /// Indicates if a transfer is complete or pending.
-//     #[inline]
-//     fn is_transfer_complete(&self) -> bool {
-//         self.epintflag(self.index()).read().trcpt1().bit()
-//     }
-
-//     /// Writes out endpoint configuration to its in-memory descriptor.
-//     fn flush_config(&mut self) {
-//         let config = *self.config();
-//         {
-//             let desc = self.desc_bank();
-//             desc.set_address(config.addr as *mut u8);
-//             desc.set_endpoint_size(config.max_packet_size);
-//             desc.set_multi_packet_size(0);
-//             desc.set_byte_count(0);
-//         }
-//     }
-
-//     /// Enables endpoint-specific interrupts.
-//     fn setup_ep_interrupts(&mut self) {
-//         self.epintenset(self.index())
-//             .write(|w| w.trcpt1().set_bit());
-//     }
-
-//     /// Prepares to transfer a series of bytes by copying the data into the
-//     /// bank1 buffer. The caller must call set_ready() to finalize the
-//     /// transfer.
-//     pub fn write(&mut self, buf: &[u8]) -> UsbResult<usize> {
-//         let size = buf.len().min(self.config().allocated_size as usize);
-//         let desc = self.desc_bank();
-
-//         unsafe {
-//             buf.as_ptr()
-//                 .copy_to_nonoverlapping(desc.get_address(), size);
-//         }
-
-//         desc.set_multi_packet_size(0);
-//         desc.set_byte_count(size as u16);
-
-//         Ok(size)
-//     }
-
-//     fn is_stalled(&self) -> bool {
-//         self.epintflag(self.index()).read().stall1().bit()
-//     }
-
-//     fn set_stall(&mut self, stall: bool) {
-//         if stall {
-//             self.epstatusset(self.index())
-//                 .write(|w| w.stallrq1().set_bit())
-//         } else {
-//             self.epstatusclr(self.index())
-//                 .write(|w| w.stallrq1().set_bit())
-//         }
-//     }
-// }
-
-// impl<'a> Bank<'a, OutBank> {
-//     fn desc_bank(&mut self) -> &mut DeviceDescBank {
-//         let idx = self.index();
-//         self.desc.bank(idx, 0)
-//     }
-
-//     /// Returns true if Bank 0 is Ready and thus has data that can be read.
-//     #[inline]
-//     fn is_ready(&self) -> bool {
-//         self.epstatus(self.index()).read().bk0rdy().bit()
-//     }
-
-//     /// Set Bank 0 Ready.
-//     /// Ready means that the buffer contains data that can be read.
-//     #[inline]
-//     fn set_ready(&self, ready: bool) {
-//         if ready {
-//             self.epstatusset(self.index())
-//                 .write(|w| w.bk0rdy().set_bit());
-//         } else {
-//             self.epstatusclr(self.index())
-//                 .write(|w| w.bk0rdy().set_bit());
-//         }
-//     }
-
-//     /// Acknowledges the signal that data has been received.
-//     #[inline]
-//     fn clear_transfer_complete(&self) {
-//         // Clear bits in epintflag by writing them to 1
-//         self.epintflag(self.index())
-//             .write(|w| w.trcpt0().set_bit().trfail0().set_bit());
-//     }
-
-//     /// Returns true if a Received Setup interrupt has occurred.
-//     /// This indicates that the read buffer holds a SETUP packet.
-//     #[inline]
-//     fn received_setup_interrupt(&self) -> bool {
-//         self.epintflag(self.index()).read().rxstp().bit()
-//     }
-
-//     /// Acknowledges the signal that a SETUP packet was received
-//     /// successfully.
-//     #[inline]
-//     fn clear_received_setup_interrupt(&self) {
-//         // Clear bits in epintflag by writing them to 1
-//         self.epintflag(self.index()).write(|w| w.rxstp().set_bit());
-//     }
-
-//     /// Writes out endpoint configuration to its in-memory descriptor.
-//     fn flush_config(&mut self) {
-//         let config = *self.config();
-//         {
-//             let desc = self.desc_bank();
-//             desc.set_address(config.addr as *mut u8);
-//             desc.set_endpoint_size(config.max_packet_size);
-//             desc.set_multi_packet_size(0);
-//             desc.set_byte_count(0);
-//         }
-//     }
-
-//     /// Enables endpoint-specific interrupts.
-//     fn setup_ep_interrupts(&mut self) {
-//         self.epintenset(self.index())
-//             .write(|w| w.rxstp().set_bit().trcpt0().set_bit());
-//     }
-
-//     /// Copies data from the bank0 buffer to the provided array. The caller
-//     /// must call set_ready to indicate the buffer is free for the next
-//     /// transfer.
-//     pub fn read(&mut self, buf: &mut [u8]) -> UsbResult<usize> {
-//         let desc = self.desc_bank();
-//         let size = desc.get_byte_count() as usize;
-
-//         if size > buf.len() {
-//             return Err(UsbError::BufferOverflow);
-//         }
-//         unsafe {
-//             desc.get_address()
-//                 .copy_to_nonoverlapping(buf.as_mut_ptr(), size);
-//         }
-
-//         desc.set_byte_count(0);
-//         desc.set_multi_packet_size(0);
-
-//         Ok(size)
-//     }
-
-//     fn is_stalled(&self) -> bool {
-//         self.epintflag(self.index()).read().stall0().bit()
-//     }
-
-//     fn set_stall(&mut self, stall: bool) {
-//         if stall {
-//             self.epstatusset(self.index())
-//                 .write(|w| w.stallrq0().set_bit())
-//         } else {
-//             self.epstatusclr(self.index())
-//                 .write(|w| w.stallrq0().set_bit())
-//         }
-//     }
-// }
-
-// impl<'a, T> Bank<'a, T> {
-//     ep!(epcfg, EPCFG);
-//     ep!(epstatusclr, EPSTATUSCLR);
-//     ep!(epstatusset, EPSTATUSSET);
-//     ep!(epstatus, EPSTATUS);
-//     ep!(epintflag, EPINTFLAG);
-//     ep!(epintenclr, EPINTENCLR);
-//     ep!(epintenset, EPINTENSET);
-// }
-
-// impl Inner {
-//     ep!(epcfg, EPCFG);
-//     ep!(epstatus, EPSTATUS);
-//     ep!(epintflag, EPINTFLAG);
-
-//     fn bank0(&'_ self, ep: EndpointAddress) -> UsbResult<Bank<'_, OutBank>> {
-//         if ep.is_in() {
-//             return Err(UsbError::InvalidEndpoint);
-//         }
-//         let endpoints = self.endpoints.borrow();
-
-//         if endpoints.endpoints[ep.index()].bank0.ep_type == EndpointTypeBits::Disabled {
-//             return Err(UsbError::InvalidEndpoint);
-//         }
-//         Ok(Bank {
-//             address: ep,
-//             usb: self.usb(),
-//             desc: self.desc.borrow_mut(),
-//             endpoints,
-//             _phantom: PhantomData,
-//         })
-//     }
-
-//     fn bank1(&'_ self, ep: EndpointAddress) -> UsbResult<Bank<'_, InBank>> {
-//         if ep.is_out() {
-//             return Err(UsbError::InvalidEndpoint);
-//         }
-//         let endpoints = self.endpoints.borrow();
-
-//         if endpoints.endpoints[ep.index()].bank1.ep_type == EndpointTypeBits::Disabled {
-//             return Err(UsbError::InvalidEndpoint);
-//         }
-//         Ok(Bank {
-//             address: ep,
-//             usb: self.usb(),
-//             desc: self.desc.borrow_mut(),
-//             endpoints,
-//             _phantom: PhantomData,
-//         })
-//     }
-// }
 
 impl Inner {
     fn open_endpoint(&self, ep_index: usize) {
         let usbhs = self.usbhs();
         match self.endpoints.ep_config[ep_index] {
             Some(ep_config) => {
+                // enable endpoint
+                self.enable_endpoint(ep_index);
+
+                rprintln!("reset and enable {:08x?}", usbhs.usbhs_devept.read().bits());
+
                 // generic configuration
                 usbhs.usbhs_deveptcfg[ep_index].write(|w| {
                     match ep_config.max_packet_size {
@@ -653,88 +316,7 @@ impl Inner {
 
         // setup endpoints
         for ep_index in 0..MAX_ENDPOINTS {
-            match self.endpoints.ep_config[ep_index] {
-                Some(ep_config) => {
-                    // enable endpoint
-                    self.enable_endpoint(ep_index);
-
-                    rprintln!("reset and enable {:08x?}", usbhs.usbhs_devept.read().bits());
-
-                    // generic configuration
-                    usbhs.usbhs_deveptcfg[ep_index].write(|w| {
-                        match ep_config.max_packet_size {
-                            0..=8 => w.epsize()._8_byte(),
-                            9..=16 => w.epsize()._16_byte(),
-                            17..=32 => w.epsize()._32_byte(),
-                            33..=64 => w.epsize()._64_byte(),
-                            65..=128 => w.epsize()._128_byte(),
-                            129..=256 => w.epsize()._256_byte(),
-                            257..=512 => w.epsize()._512_byte(),
-                            513..=1024 => w.epsize()._1024_byte(),
-                            _ => unreachable!(),
-                        };
-                        // set bank
-                        w.epbk()._1_bank();
-
-                        // set end point type
-                        w.eptype().bits(ep_config.ep_type as u8);
-
-                        // force allocation
-                        w.alloc().set_bit()
-                    });
-
-                    if ep_index == 0 {
-                        rprintln!("ep {} - set ctrl", ep_index);
-                        // ep0 used as ctrl endpoint
-                        // Configure the Endpoint 0 configuration register
-                        usbhs.usbhs_deveptcfg[0].modify(|_, w| {
-                            // setup RSTDTS
-                            usbhs.usbhs_deveptier_ctrl_mode()[ep_index]
-                                .write(|w| w.rstdts().set_bit());
-                            // setup STALLRQC
-                            usbhs.usbhs_deveptidr_ctrl_mode()[ep_index]
-                                .write(|w| w.stallrqc().set_bit());
-
-                            w
-                        });
-
-                        // check that endpoint was correctly initiated
-                        // Notice, re-allocation might fail in case size is larger, so be aware
-                        if usbhs.usbhs_deveptisr_ctrl_mode()[ep_index]
-                            .read()
-                            .cfgok()
-                            .bit_is_set()
-                        {
-                            // Endpoint configuration is successful
-                            usbhs.usbhs_deveptier_ctrl_mode()[ep_index]
-                                .write(|w| w.rxstpes().set_bit());
-                            // Enable Endpoint Interrupt
-                            self.enable_endpoint_interrupt(ep_index);
-                        } else {
-                            todo!();
-                            // rprintln!("ep {} - set {:?}", ep_index, ep_config.ep_type);
-                            // usbhs.usbhs_deveptcfg[ep_index].modify(|_, w| {
-                            //     // direction,
-                            //     // 0 (OUT): The endpoint direction is OUT.
-                            //     // 1 (IN): The endpoint direction is IN (nor for control endpoints).
-                            //     w.epdir().bit(ep_config.ep_dir == UsbDirection::In);
-
-                            //     // autosw, Per: do we really need this if not supporting multiple banks
-                            //     w.autosw().set_bit();
-
-                            //     // set nbtrans
-                            //     if ep_config.ep_type == EndpointType::Isochronous {
-                            //         w.nbtrans()._1_trans();
-                            //         todo!()
-                            //     }
-
-                            //     w
-                            // });
-                        };
-                    }
-                }
-                None => {}
-            }
+            self.open_endpoint(ep_index);
         }
 
         // un-freeze the clock, we want it enabled at all times
@@ -801,22 +383,6 @@ impl Inner {
 
         self.open_endpoint(0);
     }
-    //     /// Enables/disables the Start Of Frame (SOF) interrupt
-    //     fn sof_interrupt(&self, enable: bool) {
-    //         if enable {
-    //             self.usb().intenset.write(|w| w.sof().set_bit());
-    //         } else {
-    //             self.usb().intenclr.write(|w| w.sof().set_bit());
-    //         }
-    //     }
-    //     /// protocol_reset is called by the USB HAL when it detects the host has
-    //     /// performed a USB reset.
-    //     fn protocol_reset(&self) {
-    //         self.flush_eps(FlushConfigMode::ProtocolReset);
-    //     }
-
-    //     fn suspend(&self) {}
-    //     fn resume(&self) {}
 
     fn alloc_ep(
         &mut self,
@@ -846,7 +412,14 @@ impl Inner {
     }
 
     fn set_device_address(&self, addr: u8) {
-        todo!("inner:set_device_address {}", addr);
+        panic!("#");
+        rprintln!("set_device_address {}", addr);
+        let usbhs = self.usbhs();
+        usbhs.usbhs_devctrl.modify(|_, w| {
+            unsafe { w.uadd().bits(addr) }; // set the address
+            w.adden().clear_bit(); // do not enable just yet
+            w
+        });
     }
 
     //     fn check_sof_interrupt(&self) -> bool {
@@ -893,17 +466,14 @@ impl Inner {
         // As the suspend & wakup interrupts/states cannot distinguish between
         // unconnected & unsuspended, we do not handle them to avoid spurious transitions.
 
-        let mut ep_out = 0;
-        let mut ep_in_complete = 0;
-        let mut ep_setup = 0;
+        // let mut ep_out = 0;
+        // let mut ep_in_complete = 0;
+        // let mut ep_setup = 0;
 
         // for now just care about ep0
         // a bit ugly
         if dev_isr.pep_0().bit_is_set() {
             rprintln!("pep0");
-
-            // uint16_t count = (USB_REG->DEVEPTISR[ep_ix] &
-            //     DEVEPTISR_BYCT) >> DEVEPTISR_BYCT_Pos;
 
             let sr = usbhs.usbhs_deveptisr_ctrl_mode()[0].read();
 
@@ -929,84 +499,27 @@ impl Inner {
             if sr.rxouti().bit_is_set() {
                 rprintln!("rxouti");
                 // could be that we should read the out packet to confirm
-                panic!();
+
                 return PollResult::Data {
-                    ep_out: 0,
-                    ep_in_complete: 1,
-                    ep_setup: 0, // setup occurred at endpoint 0
+                    ep_out: 1,
+                    ep_in_complete: 0, // assuming the write is the end of the transaction
+                    ep_setup: 0,
                 };
             };
 
             // in packet done
             if sr.txini().bit_is_set() {
                 rprintln!("txini");
-                todo!();
+                return PollResult::Data {
+                    ep_out: 0,
+                    ep_in_complete: 1, // assuming the write is the end of the transaction
+                    ep_setup: 0,
+                };
             };
 
             panic!("should receive setup packet")
         }
         PollResult::None
-
-        //         let intbits = self.usb().epintsmry.read().bits();
-
-        //         for ep in 0..8u16 {
-        //             let mask = 1 << ep;
-
-        //             let idx = ep as usize;
-
-        //             if (intbits & mask) != 0 {
-        //                 if let Ok(bank1) = self.bank1(EndpointAddress::from_parts(idx, UsbDirection::In)) {
-        //                     if bank1.is_transfer_complete() {
-        //                         bank1.clear_transfer_complete();
-        //                         ep_in_complete |= mask;
-        //                     }
-        //                 }
-        //             }
-
-        //             // Can't test intbits, because bk0rdy doesn't interrupt
-        //             if let Ok(bank0) = self.bank0(EndpointAddress::from_parts(idx, UsbDirection::Out)) {
-        //                 if bank0.received_setup_interrupt() {
-        //                     ep_setup |= mask;
-
-        //                     // The RXSTP interrupt is not cleared here, because doing so
-        //                     // would allow the USB hardware to overwrite the received
-        //                     // data, potentially before it is `read()` - see SAMD5x
-        //                     // datasheet "38.6.2.6 Management of SETUP Transactions".
-        //                     // Setup events are only relevant for control endpoints, and
-        //                     // in typical USB devices, endpoint 0 is the only control
-        //                     // endpoint. The usb-device `poll()` method, which calls
-        //                     // this `poll()`, will immediately `read()` endpoint 0 when
-        //                     // its setup bit is set.
-        //                 }
-
-        //                 // Clear the transfer complete and transfer failed interrupt flags
-        //                 // so that execution leaves the USB interrupt until the host makes
-        //                 // another transaction.  The transfer failed flag may have been set
-        //                 // if an OUT transaction wasn't read() from the endpoint by the
-        //                 // Class; the hardware will have NAKed (unless the endpoint is
-        //                 // isochronous) and the host may retry.
-        //                 bank0.clear_transfer_complete();
-
-        //                 // Use the bk0rdy flag via is_ready() to indicate that data has been
-        //                 // received successfully, rather than the interrupting trcpt0 via
-        //                 // is_transfer_ready(), because data may have been received on an
-        //                 // earlier poll() which cleared trcpt0.  bk0rdy is cleared in the
-        //                 // endpoint read().
-        //                 if bank0.is_ready() {
-        //                     ep_out |= mask;
-        //                 }
-        //             }
-        //         }
-
-        //         if ep_out == 0 && ep_in_complete == 0 && ep_setup == 0 {
-        //             PollResult::None
-        //         } else {
-        //             PollResult::Data {
-        //                 ep_out,
-        //                 ep_in_complete,
-        //                 ep_setup,
-        //             }
-        //         }
     }
 
     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> UsbResult<usize> {
@@ -1029,20 +542,6 @@ impl Inner {
         usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.rxoutes().set_bit());
 
         Ok(buf.len())
-
-        //         let mut bank = self.bank1(ep)?;
-
-        //         if bank.is_ready() {
-        //             // Waiting for the host to pick up the existing data
-        //             return Err(UsbError::WouldBlock);
-        //         }
-
-        //         let size = bank.write(buf);
-
-        //         bank.clear_transfer_complete();
-        //         bank.set_ready(true); // ready to be sent
-
-        //         size
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> UsbResult<usize> {
@@ -1066,24 +565,6 @@ impl Inner {
         usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
 
         Ok(count)
-
-        //         let mut bank = self.bank0(ep)?;
-        //         let rxstp = bank.received_setup_interrupt();
-
-        //         if bank.is_ready() || rxstp {
-        //             let size = bank.read(buf);
-
-        //             if rxstp {
-        //                 bank.clear_received_setup_interrupt();
-        //             }
-
-        //             bank.clear_transfer_complete();
-        //             bank.set_ready(false);
-
-        //             size
-        //         } else {
-        //             Err(UsbError::WouldBlock)
-        //         }
     }
 
     fn is_stalled(&self, ep: EndpointAddress) -> bool {
@@ -1092,30 +573,24 @@ impl Inner {
     }
 
     fn set_stalled(&self, ep: EndpointAddress, stalled: bool) {
-        rprintln!("inner:set_stalled");
-        todo!()
-        // self.set_stall(ep, stalled);
+        rprintln!("inner:set_stalled {}", stalled);
+        let usbhs = self.usbhs();
+        // setup STALLRQC
+        if stalled {
+            usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.stallrqs().set_bit());
+            usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.rxstpes().set_bit());
+        } else {
+            usbhs.usbhs_deveptidr_ctrl_mode()[ep.index()].write(|w| w.stallrqc().set_bit());
+
+            usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.rstdts().set_bit());
+        }
     }
 }
 
-// impl UsbBus {
-//     /// Enables the Start Of Frame (SOF) interrupt
-//     pub fn enable_sof_interrupt(&self) {
-//         disable_interrupts(|cs| self.inner.borrow(cs).borrow_mut().sof_interrupt(true))
-//     }
-
-//     /// Disables the Start Of Frame (SOF) interrupt
-//     pub fn disable_sof_interrupt(&self) {
-//         disable_interrupts(|cs| self.inner.borrow(cs).borrow_mut().sof_interrupt(false))
-//     }
-
-//     /// Checks, and clears if set, the Start Of Frame (SOF) interrupt flag
-//     pub fn check_sof_interrupt(&self) -> bool {
-//         disable_interrupts(|cs| self.inner.borrow(cs).borrow_mut().check_sof_interrupt())
-//     }
-// }
-
 impl usb_device::bus::UsbBus for UsbBus {
+    // ensure the address is set before write of zero sized packed to confirm a SET_ADDRESS transaction
+    // const QUIRK_SET_ADDRESS_BEFORE_STATUS: bool = true;
+
     fn enable(&mut self) {
         interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.enable());
     }
@@ -1154,8 +629,7 @@ impl usb_device::bus::UsbBus for UsbBus {
     }
 
     fn set_device_address(&self, addr: u8) {
-        todo!();
-        // disable_interrupts(|cs| self.inner.borrow(cs).borrow().set_device_address(addr))
+        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.set_device_address(addr))
     }
 
     fn poll(&self) -> PollResult {
