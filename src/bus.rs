@@ -94,6 +94,7 @@ impl Endpoints {
 
 struct Inner {
     endpoints: Endpoints,
+    addressed: bool,
 }
 
 pub struct UsbBus {
@@ -104,6 +105,7 @@ impl UsbBus {
     pub fn new(_usb: pac::USBHS) -> Self {
         let inner = Inner {
             endpoints: Endpoints::new(),
+            addressed: false,
         };
 
         Self {
@@ -184,9 +186,7 @@ impl Inner {
             );
         }
     }
-}
 
-impl Inner {
     fn open_endpoint(&self, ep_index: usize) {
         let usbhs = self.usbhs();
         match self.endpoints.ep_config[ep_index] {
@@ -412,31 +412,27 @@ impl Inner {
     }
 
     fn set_device_address(&self, addr: u8) {
-        panic!("#");
         rprintln!("set_device_address {}", addr);
         let usbhs = self.usbhs();
         usbhs.usbhs_devctrl.modify(|_, w| {
             unsafe { w.uadd().bits(addr) }; // set the address
-            w.adden().clear_bit(); // do not enable just yet
+            w.adden().clear_bit(); // do not enable just yet, done on TXINI for transaction
             w
         });
     }
 
-    //     fn check_sof_interrupt(&self) -> bool {
-    //         if self.usb().intflag.read().sof().bit() {
-    //             self.usb().intflag.write(|w| w.sof().set_bit());
-    //             return true;
-    //         }
-    //         false
-    //     }
-
-    fn poll(&self) -> PollResult {
+    fn poll(&mut self) -> PollResult {
         rprintln!("inner:poll");
 
         // Safety: Usbd owns the USBHS
         let usbhs = self.usbhs();
-        let dev_ctrl = usbhs.usbhs_devctrl.read().bits();
-        rprintln!("dev_ctrl {:#10x}", dev_ctrl);
+        let dev_ctrl = usbhs.usbhs_devctrl.read();
+        rprintln!(
+            "dev_ctrl {:#10x}, uadd {}, adden {}",
+            dev_ctrl.bits(),
+            dev_ctrl.uadd().bits(),
+            dev_ctrl.adden().bit_is_set()
+        );
         let ctrl = usbhs.usbhs_ctrl.read().bits();
         rprintln!("ctrl {:x}", ctrl);
         let dev_isr = usbhs.usbhs_devisr.read();
@@ -479,14 +475,8 @@ impl Inner {
 
             // setup packet?
             if sr.rxstpi().bit_is_set() {
-                rprintln!("rxstpi");
+                rprintln!("- rxstpi");
                 // setup packet received
-                let sr = usbhs.usbhs_deveptisr_ctrl_mode()[0].read();
-                let count = sr.byct().bits() as usize;
-                rprintln!("count {}", count);
-
-                // Disable RXSTPI interrupt?
-                // usb_hs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.rxstpec().set_bit());
 
                 return PollResult::Data {
                     ep_out: 0,
@@ -510,6 +500,16 @@ impl Inner {
             // in packet done
             if sr.txini().bit_is_set() {
                 rprintln!("txini");
+                // for now assume that this is called only for a SET_ADDRESS
+                if !self.addressed {
+                    rprintln!("--- set addressed");
+                    let usbhs = self.usbhs();
+                    usbhs.usbhs_devctrl.modify(|_, w| {
+                        w.adden().set_bit(); // commit the new address
+                        w
+                    });
+                    self.addressed = true;
+                }
                 return PollResult::Data {
                     ep_out: 0,
                     ep_in_complete: 1, // assuming the write is the end of the transaction
@@ -564,6 +564,9 @@ impl Inner {
         // Clear RXSTPI interrupt, and make FIFO available
         usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
 
+        // Clear RXOUTI
+        usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxoutic().set_bit());
+
         Ok(count)
     }
 
@@ -589,7 +592,7 @@ impl Inner {
 
 impl usb_device::bus::UsbBus for UsbBus {
     // ensure the address is set before write of zero sized packed to confirm a SET_ADDRESS transaction
-    // const QUIRK_SET_ADDRESS_BEFORE_STATUS: bool = true;
+    const QUIRK_SET_ADDRESS_BEFORE_STATUS: bool = true;
 
     fn enable(&mut self) {
         interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.enable());
