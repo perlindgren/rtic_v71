@@ -94,7 +94,7 @@ impl Endpoints {
 
 struct Inner {
     endpoints: Endpoints,
-    addressed: bool,
+    set_address: bool,
 }
 
 pub struct UsbBus {
@@ -105,7 +105,7 @@ impl UsbBus {
     pub fn new(_usb: pac::USBHS) -> Self {
         let inner = Inner {
             endpoints: Endpoints::new(),
-            addressed: false,
+            set_address: false,
         };
 
         Self {
@@ -411,7 +411,7 @@ impl Inner {
         Ok(addr)
     }
 
-    fn set_device_address(&self, addr: u8) {
+    fn set_device_address(&mut self, addr: u8) {
         rprintln!("set_device_address {}", addr);
         let usbhs = self.usbhs();
         usbhs.usbhs_devctrl.modify(|_, w| {
@@ -419,6 +419,7 @@ impl Inner {
             w.adden().clear_bit(); // do not enable just yet, done on TXINI for transaction
             w
         });
+        self.set_address = true;
     }
 
     fn poll(&mut self) -> PollResult {
@@ -501,14 +502,14 @@ impl Inner {
             if sr.txini().bit_is_set() {
                 rprintln!("txini");
                 // for now assume that this is called only for a SET_ADDRESS
-                if !self.addressed {
+                if self.set_address {
                     rprintln!("--- set addressed");
                     let usbhs = self.usbhs();
                     usbhs.usbhs_devctrl.modify(|_, w| {
                         w.adden().set_bit(); // commit the new address
                         w
                     });
-                    self.addressed = true;
+                    self.set_address = false;
                 }
                 return PollResult::Data {
                     ep_out: 0,
