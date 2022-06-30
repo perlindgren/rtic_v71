@@ -580,14 +580,14 @@ impl Inner {
         rprintln!("inner:set_stalled {}", stalled);
         let usbhs = self.usbhs();
         // setup STALLRQC
-        if stalled {
-            usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.stallrqs().set_bit());
-            usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.rxstpes().set_bit());
-        } else {
-            usbhs.usbhs_deveptidr_ctrl_mode()[ep.index()].write(|w| w.stallrqc().set_bit());
+        // if stalled {
+        //     usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.stallrqs().set_bit());
+        //     usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.rxstpes().set_bit());
+        // } else {
+        //     usbhs.usbhs_deveptidr_ctrl_mode()[ep.index()].write(|w| w.stallrqc().set_bit());
 
-            usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.rstdts().set_bit());
-        }
+        //     usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.rstdts().set_bit());
+        // }
     }
 }
 
