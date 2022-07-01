@@ -596,11 +596,15 @@ impl usb_device::bus::UsbBus for UsbBus {
     const QUIRK_SET_ADDRESS_BEFORE_STATUS: bool = true;
 
     fn enable(&mut self) {
+        rprintln!("==> enable");
         interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.enable());
+        rprintln!("<== enable");
     }
 
     fn reset(&self) {
+        rprintln!("==> reset");
         interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.reset());
+        rprintln!("<== reset");
     }
 
     fn suspend(&self) {
@@ -621,7 +625,8 @@ impl usb_device::bus::UsbBus for UsbBus {
         max_packet_size: u16,
         interval: u8,
     ) -> UsbResult<EndpointAddress> {
-        interrupt::free(|cs| {
+        rprintln!("==> alloc_ep");
+        let res = interrupt::free(|cs| {
             unsafe { &mut *self.inner.borrow(cs).get() }.alloc_ep(
                 dir,
                 addr,
@@ -629,30 +634,78 @@ impl usb_device::bus::UsbBus for UsbBus {
                 max_packet_size,
                 interval,
             )
-        })
+        });
+        rprintln!("<== alloc_ep {:?}", res);
+        res
     }
 
     fn set_device_address(&self, addr: u8) {
-        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.set_device_address(addr))
+        rprintln!("==> set_device_address");
+        let res = interrupt::free(|cs| {
+            unsafe { &mut *self.inner.borrow(cs).get() }.set_device_address(addr)
+        });
+        rprintln!("<== set_device_address {:?}", res);
+        res
     }
 
     fn poll(&self) -> PollResult {
-        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.poll())
+        rprintln!("==> poll");
+        let res = interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.poll());
+
+        rprintln!("<== poll PollResult");
+        //     match res {
+        //         PollResult::None => format_args!("None"),
+        //         PollResult::Reset => format_args!("Reset"),
+        //         PollResult::Data {
+        //             ep_out,
+        //             ep_in_complete,
+        //             ep_setup,
+        //         } => format_args!(
+        //             "Data {{ ep_out {}, ep_in_complete {}, ep_setup {}}}",
+        //             ep_out.clone(),
+        //             ep_in_complete.clone(),
+        //             ep_setup.clone()
+        //         ),
+        //         PollResult::Suspend => format_args!("Suspend"),
+        //         PollResult::Resume => format_args!("Resume"),
+        //         _ => panic!(),
+        //     }
+        // );
+        res
     }
 
     fn write(&self, ep: EndpointAddress, buf: &[u8]) -> UsbResult<usize> {
-        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.write(ep, buf))
+        rprintln!("==> write");
+        let res = interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.write(ep, buf));
+        rprintln!("<== write {:?}", res);
+        res
     }
 
     fn read(&self, ep: EndpointAddress, buf: &mut [u8]) -> UsbResult<usize> {
-        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.read(ep, buf))
+        rprintln!("==> read");
+        let res = interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.read(ep, buf));
+        rprintln!("<== read {:?}", res);
+        res
     }
 
     fn set_stalled(&self, ep: EndpointAddress, stalled: bool) {
-        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.set_stalled(ep, stalled));
+        rprintln!("==> set_stalled");
+        let res = interrupt::free(|cs| {
+            unsafe { &mut *self.inner.borrow(cs).get() }.set_stalled(ep, stalled)
+        });
+        rprintln!("<== set_stalled");
+        res
     }
 
     fn is_stalled(&self, ep: EndpointAddress) -> bool {
-        interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.is_stalled(ep))
+        rprintln!("==> is_stalled");
+        let res = interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.is_stalled(ep));
+        rprintln!("<== is_stalled {}", res);
+        res
+    }
+
+    fn force_reset(&self) -> UsbResult<()> {
+        rprintln!("==> force_reset");
+        Err(UsbError::Unsupported)
     }
 }
