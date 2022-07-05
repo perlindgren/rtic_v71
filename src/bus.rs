@@ -14,7 +14,7 @@ use usb_device::bus::{PollResult, UsbBusAllocator};
 use usb_device::endpoint::{EndpointAddress, EndpointType};
 use usb_device::{Result as UsbResult, UsbDirection, UsbError};
 
-use rtt_target::rprintln;
+use rtt_target::{rprint, rprintln};
 
 pub fn usb_allocator(usb: pac::USBHS) -> UsbBusAllocator<UsbBus> {
     UsbBusAllocator::new(UsbBus::new(usb))
@@ -291,7 +291,10 @@ impl Inner {
         while usbhs.usbhs_sr.read().clkusable().bit_is_clear() {}
 
         // normal mode, both fs and hs available, will autodetect
-        usbhs.usbhs_devctrl.modify(|_, w| w.spdconf().normal());
+        //  usbhs.usbhs_devctrl.modify(|_, w| w.spdconf().normal());
+
+        // normal mode, both fs and hs available, will autodetect
+        usbhs.usbhs_devctrl.modify(|_, w| w.spdconf().forced_fs());
 
         // enable interrupts
         usbhs.usbhs_devier.write(|w| {
@@ -314,10 +317,12 @@ impl Inner {
         // attach the device
         usbhs.usbhs_devctrl.modify(|_, w| w.detach().clear_bit());
 
+        // wait for reset instead
+
         // setup endpoints
-        for ep_index in 0..MAX_ENDPOINTS {
-            self.open_endpoint(ep_index);
-        }
+        // for ep_index in 0..MAX_ENDPOINTS {
+        //     self.open_endpoint(ep_index);
+        // }
 
         // un-freeze the clock, we want it enabled at all times
         usbhs.usbhs_ctrl.modify(|_, w| w.frzclk().clear_bit());
@@ -520,6 +525,36 @@ impl Inner {
 
             panic!("should receive setup packet")
         }
+
+        // ugly should iterate
+        if dev_isr.pep_1().bit_is_set() {
+            panic!("pep_1");
+        }
+        if dev_isr.pep_2().bit_is_set() {
+            panic!("pep_2");
+        }
+        if dev_isr.pep_3().bit_is_set() {
+            panic!("pep_3");
+        }
+        if dev_isr.pep_4().bit_is_set() {
+            panic!("pep_4");
+        }
+        if dev_isr.pep_5().bit_is_set() {
+            panic!("pep_5");
+        }
+        if dev_isr.pep_6().bit_is_set() {
+            panic!("pep_6");
+        }
+        if dev_isr.pep_7().bit_is_set() {
+            panic!("pep_7");
+        }
+        if dev_isr.pep_8().bit_is_set() {
+            panic!("pep_8");
+        }
+        if dev_isr.pep_9().bit_is_set() {
+            panic!("pep_9");
+        }
+
         PollResult::None
     }
 
@@ -530,19 +565,23 @@ impl Inner {
         rprintln!("buf.len {:?}", buf.len());
 
         let ep_index = ep_addr.index();
-        rprintln!("ep_index {}", ep_index);
-        self.write_fifo(ep_index, buf);
+        if ep_index == 0 {
+            rprintln!("ep_index {}", ep_index);
+            self.write_fifo(ep_index, buf);
 
-        let usbhs = self.usbhs();
+            let usbhs = self.usbhs();
 
-        // clear TXINI to send the package
-        usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
-        // enable TXINI interrupt
-        usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.txines().set_bit());
-        // enable RXOUTI interrupt
-        usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.rxoutes().set_bit());
+            // clear TXINI to send the package
+            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
+            // enable TXINI interrupt
+            usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.txines().set_bit());
+            // enable RXOUTI interrupt
+            usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.rxoutes().set_bit());
 
-        Ok(buf.len())
+            return Ok(buf.len());
+        } else {
+            todo!("");
+        }
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> UsbResult<usize> {
@@ -552,23 +591,27 @@ impl Inner {
 
         let ep_index = ep_addr.index();
 
-        let usbhs = self.usbhs();
+        if ep_index == 0 {
+            let usbhs = self.usbhs();
 
-        let sr = usbhs.usbhs_deveptisr_ctrl_mode()[0].read();
-        let count = sr.byct().bits() as usize;
-        rprintln!("--- read count {}", count);
+            let sr = usbhs.usbhs_deveptisr_ctrl_mode()[0].read();
+            let count = sr.byct().bits() as usize;
+            rprintln!("--- read count {}", count);
 
-        self.read_fifo(ep_index, &mut buf[0..count]);
+            self.read_fifo(ep_index, &mut buf[0..count]);
 
-        rprintln!("--- read buf {:x?}", &buf[0..count]);
+            rprintln!("--- read buf {:x?}", &buf[0..count]);
 
-        // Clear RXSTPI interrupt, and make FIFO available
-        usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
+            // Clear RXSTPI interrupt, and make FIFO available
+            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
 
-        // Clear RXOUTI
-        usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxoutic().set_bit());
+            // Clear RXOUTI
+            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxoutic().set_bit());
 
-        Ok(count)
+            return Ok(count);
+        } else {
+            todo!();
+        }
     }
 
     fn is_stalled(&self, ep: EndpointAddress) -> bool {
@@ -652,25 +695,24 @@ impl usb_device::bus::UsbBus for UsbBus {
         rprintln!("==> poll");
         let res = interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.poll());
 
-        rprintln!("<== poll PollResult");
-        //     match res {
-        //         PollResult::None => format_args!("None"),
-        //         PollResult::Reset => format_args!("Reset"),
-        //         PollResult::Data {
-        //             ep_out,
-        //             ep_in_complete,
-        //             ep_setup,
-        //         } => format_args!(
-        //             "Data {{ ep_out {}, ep_in_complete {}, ep_setup {}}}",
-        //             ep_out.clone(),
-        //             ep_in_complete.clone(),
-        //             ep_setup.clone()
-        //         ),
-        //         PollResult::Suspend => format_args!("Suspend"),
-        //         PollResult::Resume => format_args!("Resume"),
-        //         _ => panic!(),
-        //     }
-        // );
+        rprint!("<== poll PollResult::");
+        match res {
+            PollResult::None => rprintln!("None"),
+            PollResult::Reset => rprintln!("Reset"),
+            PollResult::Data {
+                ep_out,
+                ep_in_complete,
+                ep_setup,
+            } => rprintln!(
+                "Data {{ ep_out {}, ep_in_complete {}, ep_setup {}}}",
+                ep_out,
+                ep_in_complete,
+                ep_setup
+            ),
+            PollResult::Suspend => rprintln!("Suspend"),
+            PollResult::Resume => rprintln!("Resume"),
+            _ => panic!(),
+        };
         res
     }
 

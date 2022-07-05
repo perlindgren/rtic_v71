@@ -95,6 +95,7 @@
         "ppdsr",
         "pudr",
         "pusr",
+        "rprint",
         "rprintln",
         "rstdts",
         "rtic",
