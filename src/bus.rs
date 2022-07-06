@@ -575,12 +575,12 @@ impl Inner {
         rprintln!("buf {:02x?}", buf);
         rprintln!("buf.len {:?}", buf.len());
 
+        let usbhs = self.usbhs();
         let ep_index = ep_addr.index();
+        assert!(buf.len() as u16 <= self.endpoints.ep_config[ep_index].unwrap().max_packet_size);
         if ep_index == 0 {
             rprintln!("ep_index {}", ep_index);
             self.write_fifo(ep_index, buf);
-
-            let usbhs = self.usbhs();
 
             // clear TXINI to send the package
             usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
@@ -588,11 +588,16 @@ impl Inner {
             usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.txines().set_bit());
             // enable RXOUTI interrupt
             usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.rxoutes().set_bit());
-
-            return Ok(buf.len());
         } else {
-            todo!("");
+            // Clear the FIFO control send the package.
+            usbhs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.fifoconc().set_bit());
+
+            // clear TXINI to send the package
+            // not sure if needed
+            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
         }
+
+        Ok(buf.len())
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> UsbResult<usize> {
@@ -602,27 +607,35 @@ impl Inner {
 
         let ep_index = ep_addr.index();
 
+        let usbhs = self.usbhs();
+
+        let sr = usbhs.usbhs_deveptisr_ctrl_mode()[ep_index].read();
+        let count = sr.byct().bits() as usize;
+
+        rprintln!("--- read count {}", count);
+
+        self.read_fifo(ep_index, &mut buf[0..count]);
+
+        rprintln!("--- read buf {:x?}", &buf[0..count]);
+
         if ep_index == 0 {
-            let usbhs = self.usbhs();
-
-            let sr = usbhs.usbhs_deveptisr_ctrl_mode()[0].read();
-            let count = sr.byct().bits() as usize;
-            rprintln!("--- read count {}", count);
-
-            self.read_fifo(ep_index, &mut buf[0..count]);
-
-            rprintln!("--- read buf {:x?}", &buf[0..count]);
+            // End Point 0
 
             // Clear RXSTPI interrupt, and make FIFO available
             usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxstpic().set_bit());
 
             // Clear RXOUTI
             usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxoutic().set_bit());
-
-            return Ok(count);
         } else {
-            todo!();
+            // Other Endpoints
+
+            // Clear the FIFO control flag to receive more data.
+            usbhs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.fifoconc().set_bit());
+
+            // Clear RXOUTI
+            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxoutic().set_bit());
         }
+        Ok(count)
     }
 
     fn is_stalled(&self, ep: EndpointAddress) -> bool {
