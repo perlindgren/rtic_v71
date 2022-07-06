@@ -7,6 +7,7 @@
 use super::Descriptors;
 
 use atsamx7x_hal::target_device as pac;
+use embedded_hal::can::ExtendedId;
 
 use core::cell::UnsafeCell;
 use cortex_m::interrupt::{self, Mutex};
@@ -24,23 +25,16 @@ pub fn usb_allocator(usb: pac::USBHS) -> UsbBusAllocator<UsbBus> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct EPConfig {
     ep_type: EndpointType,
-    // allocated_size: u16,
+    ep_dir: UsbDirection,
     max_packet_size: u16,
-    // addr: usize,
 }
 
 impl EPConfig {
-    fn new(
-        ep_type: EndpointType,
-        // allocated_size: u16,
-        max_packet_size: u16,
-        // buffer_addr: *mut u8,
-    ) -> Self {
+    fn new(ep_type: EndpointType, dir: UsbDirection, max_packet_size: u16) -> Self {
         Self {
             ep_type,
-            // allocated_size,
+            ep_dir: dir,
             max_packet_size,
-            // addr: buffer_addr as usize,
         }
     }
 }
@@ -48,24 +42,23 @@ impl EPConfig {
 /// Endpoints tracks the desired configuration of all endpoints managed
 /// by the USB peripheral.
 ///
-const MAX_ENDPOINTS: usize = 10;
+const NR_ENDPOINTS: usize = 10;
 
 #[derive(Debug, PartialEq)]
 struct Endpoints {
-    // None = Disabled
-    ep_config: [Option<EPConfig>; 10],
+    ep_config: [Option<EPConfig>; NR_ENDPOINTS],
 }
 
 impl Endpoints {
     fn new() -> Self {
         Self {
-            ep_config: [None; MAX_ENDPOINTS],
+            ep_config: [None; NR_ENDPOINTS],
         }
     }
 
     fn find_free_endpoint(&self) -> UsbResult<usize> {
         // start with 1 because 0 is reserved for Control
-        for idx in 1..MAX_ENDPOINTS {
+        for idx in 1..NR_ENDPOINTS {
             if self.ep_config[idx] == None {
                 return Ok(idx);
             }
@@ -86,7 +79,7 @@ impl Endpoints {
             return Err(UsbError::EndpointOverflow);
         }
 
-        self.ep_config[idx] = Some(EPConfig::new(ep_type, max_packet_size));
+        self.ep_config[idx] = Some(EPConfig::new(ep_type, dir, max_packet_size));
 
         Ok(EndpointAddress::from_parts(idx, dir))
     }
@@ -247,24 +240,44 @@ impl Inner {
                         self.enable_endpoint_interrupt(ep_index);
                     } else {
                         todo!();
-                        // rprintln!("ep {} - set {:?}", ep_index, ep_config.ep_type);
-                        // usbhs.usbhs_deveptcfg[ep_index].modify(|_, w| {
-                        //     // direction,
-                        //     // 0 (OUT): The endpoint direction is OUT.
-                        //     // 1 (IN): The endpoint direction is IN (nor for control endpoints).
-                        //     w.epdir().bit(ep_config.ep_dir == UsbDirection::In);
+                    };
+                } else {
+                    rprintln!("ep {} - set type {:?}", ep_index, ep_config.ep_type);
+                    usbhs.usbhs_deveptcfg[ep_index].modify(|_, w| {
+                        // direction,
+                        // 0 (OUT): The endpoint direction is OUT.
+                        // 1 (IN): The endpoint direction is IN (nor for control endpoints).
+                        w.epdir().bit(ep_config.ep_dir == UsbDirection::In);
 
                         //     // autosw, Per: do we really need this if not supporting multiple banks
-                        //     w.autosw().set_bit();
+                        w.autosw().set_bit();
 
-                        //     // set nbtrans
+                        // set nbtrans
                         //     if ep_config.ep_type == EndpointType::Isochronous {
                         //         w.nbtrans()._1_trans();
                         //         todo!()
                         //     }
 
-                        //     w
-                        // });
+                        w
+                    });
+
+                    // setup RSTDTS
+                    usbhs.usbhs_deveptier_ctrl_mode()[ep_index].write(|w| w.rstdts().set_bit());
+                    // setup STALLRQC
+                    usbhs.usbhs_deveptidr_ctrl_mode()[ep_index].write(|w| w.stallrqc().set_bit());
+
+                    if usbhs.usbhs_deveptisr_ctrl_mode()[ep_index]
+                        .read()
+                        .cfgok()
+                        .bit_is_set()
+                    {
+                        // Endpoint configuration is successful
+                        usbhs.usbhs_deveptier_ctrl_mode()[ep_index]
+                            .write(|w| w.rxstpes().set_bit());
+                        // Enable Endpoint Interrupt
+                        self.enable_endpoint_interrupt(ep_index);
+                    } else {
+                        todo!();
                     };
                 }
             }
@@ -317,12 +330,7 @@ impl Inner {
         // attach the device
         usbhs.usbhs_devctrl.modify(|_, w| w.detach().clear_bit());
 
-        // wait for reset instead
-
-        // setup endpoints
-        // for ep_index in 0..MAX_ENDPOINTS {
-        //     self.open_endpoint(ep_index);
-        // }
+        // We setup the endpoints on reset
 
         // un-freeze the clock, we want it enabled at all times
         usbhs.usbhs_ctrl.modify(|_, w| w.frzclk().clear_bit());
@@ -386,7 +394,10 @@ impl Inner {
             w.eprst9().clear_bit()
         });
 
-        self.open_endpoint(0);
+        // setup endpoints
+        for ep_index in 0..NR_ENDPOINTS {
+            self.open_endpoint(ep_index);
+        }
     }
 
     fn alloc_ep(

@@ -137,30 +137,28 @@ mod app {
                     asm::nop();
                 }
             } else {
-                rprintln!("------------");
+                match serial.read(&mut buf) {
+                    Ok(count) if count > 0 => {
+                        // Echo back in upper case
+                        for c in buf[0..count].iter_mut() {
+                            if 0x61 <= *c && *c <= 0x7a {
+                                *c &= !0x20;
+                            }
+                        }
+
+                        let mut write_offset = 0;
+                        while write_offset < count {
+                            match serial.write(&buf[write_offset..count]) {
+                                Ok(len) if len > 0 => {
+                                    write_offset += len;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
-
-            // match serial.read(&mut buf) {
-            //     Ok(count) if count > 0 => {
-            //         // Echo back in upper case
-            //         for c in buf[0..count].iter_mut() {
-            //             if 0x61 <= *c && *c <= 0x7a {
-            //                 *c &= !0x20;
-            //             }
-            //         }
-
-            //         let mut write_offset = 0;
-            //         while write_offset < count {
-            //             match serial.write(&buf[write_offset..count]) {
-            //                 Ok(len) if len > 0 => {
-            //                     write_offset += len;
-            //                 }
-            //                 _ => {}
-            //             }
-            //         }
-            //     }
-            //     _ => {}
-            // }
         }
         #[allow(unreachable_code)]
         (Shared {}, Local {}, init::Monotonics())
