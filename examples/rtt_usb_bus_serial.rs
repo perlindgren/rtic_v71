@@ -132,28 +132,40 @@ mod app {
             rprintln!("rtic: poll");
 
             if !usb_dev.poll(&mut [&mut serial]) {
-                rprintln!("rtic: wait");
-                for _ in 0..10_000 {
+                // rprintln!("rtic: wait");
+                for _ in 0..20_000 {
                     asm::nop();
                 }
             } else {
                 match serial.read(&mut buf) {
-                    Ok(count) if count > 0 => {
-                        // Echo back in upper case
-                        for c in buf[0..count].iter_mut() {
-                            if 0x61 <= *c && *c <= 0x7a {
-                                *c &= !0x20;
-                            }
-                        }
+                    Ok(count) => {
+                        if count > 0 {
+                            rprintln!("rtic:read {:?}, count {}", &buf[0..count], count);
 
-                        let mut write_offset = 0;
-                        while write_offset < count {
-                            match serial.write(&buf[write_offset..count]) {
-                                Ok(len) if len > 0 => {
-                                    write_offset += len;
+                            // Echo back in upper case
+                            for c in buf[0..count].iter_mut() {
+                                if 0x61 <= *c && *c <= 0x7a {
+                                    *c &= !0x20;
                                 }
-                                _ => {}
                             }
+                            rprintln!("rtic:write begin");
+
+                            let mut write_offset = 0;
+                            while write_offset < count {
+                                match serial.write(&buf[write_offset..count]) {
+                                    Ok(len) if len > 0 => {
+                                        write_offset += len;
+                                    }
+                                    _ => {
+                                        panic!();
+                                    }
+                                }
+                            }
+                            rprintln!("rtic:write end");
+                        } else {
+                            panic!("data {:?}, count {}", &buf[0..count], count);
+                            rprintln!("there");
+                            panic!();
                         }
                     }
                     _ => {}

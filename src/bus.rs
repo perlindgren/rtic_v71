@@ -439,21 +439,21 @@ impl Inner {
     }
 
     fn poll(&mut self) -> PollResult {
-        rprintln!("inner:poll");
+        // rprintln!("inner:poll");
 
         // Safety: Usbd owns the USBHS
         let usbhs = self.usbhs();
         let dev_ctrl = usbhs.usbhs_devctrl.read();
-        rprintln!(
-            "dev_ctrl {:#10x}, uadd {}, adden {}",
-            dev_ctrl.bits(),
-            dev_ctrl.uadd().bits(),
-            dev_ctrl.adden().bit_is_set()
-        );
-        let ctrl = usbhs.usbhs_ctrl.read().bits();
-        rprintln!("ctrl {:x}", ctrl);
+        // rprintln!(
+        //     "dev_ctrl {:#10x}, uadd {}, adden {}",
+        //     dev_ctrl.bits(),
+        //     dev_ctrl.uadd().bits(),
+        //     dev_ctrl.adden().bit_is_set()
+        // );
+        // let ctrl = usbhs.usbhs_ctrl.read().bits();
+        // rprintln!("ctrl {:x}", ctrl);
         let dev_isr = usbhs.usbhs_devisr.read();
-        rprintln!("dev_irs : {:#010x}", dev_isr.bits());
+        // rprintln!("dev_irs : {:#010x}", dev_isr.bits());
 
         if dev_isr.eorst().bit_is_set() {
             // EORST - End of Reset
@@ -486,13 +486,13 @@ impl Inner {
         // for now just care about ep0
         // a bit ugly
         if dev_isr.pep_0().bit_is_set() {
-            rprintln!("pep0");
+            // rprintln!("pep0");
 
             let sr = usbhs.usbhs_deveptisr_ctrl_mode()[0].read();
 
             // setup packet?
             if sr.rxstpi().bit_is_set() {
-                rprintln!("- rxstpi");
+                // rprintln!("- rxstpi");
                 // setup packet received
 
                 return PollResult::Data {
@@ -504,7 +504,7 @@ impl Inner {
 
             // out packet done
             if sr.rxouti().bit_is_set() {
-                rprintln!("rxouti");
+                // rprintln!("rxouti");
                 // could be that we should read the out packet to confirm
 
                 return PollResult::Data {
@@ -516,7 +516,7 @@ impl Inner {
 
             // in packet done
             if sr.txini().bit_is_set() {
-                rprintln!("txini");
+                // rprintln!("txini");
                 // for now assume that this is called only for a SET_ADDRESS
                 if self.set_address {
                     rprintln!("--- set addressed");
@@ -570,18 +570,17 @@ impl Inner {
     }
 
     fn write(&self, ep_addr: EndpointAddress, buf: &[u8]) -> UsbResult<usize> {
-        rprintln!("inner:write");
+        // rprintln!("inner:write");
         rprintln!("ep_addr {:?}", ep_addr);
-        rprintln!("buf {:02x?}", buf);
-        rprintln!("buf.len {:?}", buf.len());
+        // rprintln!("buf {:02x?}", buf);
+        // rprintln!("buf.len {:?}", buf.len());
 
         let usbhs = self.usbhs();
         let ep_index = ep_addr.index();
+        // rprintln!("ep_index {}", ep_index);
         assert!(buf.len() as u16 <= self.endpoints.ep_config[ep_index].unwrap().max_packet_size);
+        self.write_fifo(ep_index, buf);
         if ep_index == 0 {
-            rprintln!("ep_index {}", ep_index);
-            self.write_fifo(ep_index, buf);
-
             // clear TXINI to send the package
             usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
             // enable TXINI interrupt
@@ -589,21 +588,23 @@ impl Inner {
             // enable RXOUTI interrupt
             usbhs.usbhs_deveptier_ctrl_mode()[0].write(|w| w.rxoutes().set_bit());
         } else {
+            // panic!("write ep {}", ep_index);
             // Clear the FIFO control send the package.
-            usbhs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.fifoconc().set_bit());
+            usbhs.usbhs_deveptidr_ctrl_mode()[ep_index].write(|w| w.fifoconc().set_bit());
 
             // clear TXINI to send the package
             // not sure if needed
-            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.txinic().set_bit());
+            usbhs.usbhs_devepticr_ctrl_mode()[ep_index].write(|w| w.txinic().set_bit());
         }
 
+        // assume all fit in one transfer
         Ok(buf.len())
     }
 
     fn read(&self, ep_addr: EndpointAddress, buf: &mut [u8]) -> UsbResult<usize> {
-        rprintln!("inner:read");
+        // rprintln!("inner:read");
         rprintln!("ep_addr {:?}", ep_addr);
-        rprintln!("buf.len {:?}", buf.len());
+        // rprintln!("buf.len {:?}", buf.len());
 
         let ep_index = ep_addr.index();
 
@@ -612,11 +613,11 @@ impl Inner {
         let sr = usbhs.usbhs_deveptisr_ctrl_mode()[ep_index].read();
         let count = sr.byct().bits() as usize;
 
-        rprintln!("--- read count {}", count);
+        // rprintln!("--- read count {}", count);
 
         self.read_fifo(ep_index, &mut buf[0..count]);
 
-        rprintln!("--- read buf {:x?}", &buf[0..count]);
+        // rprintln!("--- read buf {:x?}", &buf[0..count]);
 
         if ep_index == 0 {
             // End Point 0
@@ -630,22 +631,22 @@ impl Inner {
             // Other Endpoints
 
             // Clear the FIFO control flag to receive more data.
-            usbhs.usbhs_deveptidr_ctrl_mode()[0].write(|w| w.fifoconc().set_bit());
+            usbhs.usbhs_deveptidr_ctrl_mode()[ep_index].write(|w| w.fifoconc().set_bit());
 
             // Clear RXOUTI
-            usbhs.usbhs_devepticr_ctrl_mode()[0].write(|w| w.rxoutic().set_bit());
+            usbhs.usbhs_devepticr_ctrl_mode()[ep_index].write(|w| w.rxoutic().set_bit());
         }
         Ok(count)
     }
 
     fn is_stalled(&self, ep: EndpointAddress) -> bool {
-        rprintln!("inner:is_stalled");
+        // rprintln!("inner:is_stalled");
         todo!()
     }
 
     fn set_stalled(&self, ep: EndpointAddress, stalled: bool) {
-        rprintln!("inner:set_stalled {}", stalled);
-        let usbhs = self.usbhs();
+        // rprintln!("inner:set_stalled {}", stalled);
+        // let usbhs = self.usbhs();
         // setup STALLRQC
         // if stalled {
         //     usbhs.usbhs_deveptier_ctrl_mode()[ep.index()].write(|w| w.stallrqs().set_bit());
@@ -665,13 +666,13 @@ impl usb_device::bus::UsbBus for UsbBus {
     fn enable(&mut self) {
         rprintln!("==> enable");
         interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.enable());
-        rprintln!("<== enable");
+        // rprintln!("<== enable");
     }
 
     fn reset(&self) {
         rprintln!("==> reset");
         interrupt::free(|cs| unsafe { &mut *self.inner.borrow(cs).get() }.reset());
-        rprintln!("<== reset");
+        // rprintln!("<== reset");
     }
 
     fn suspend(&self) {
